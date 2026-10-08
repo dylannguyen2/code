@@ -1464,3 +1464,107 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
     }),
   );
 });
+
+it.layer(layerTest)("delegated follow-ups", (it) => {
+  it.effect("reports an orchestrator's delegated thread's later turns to it, once each", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:follow-up-parent");
+      const projectId = ProjectId.make("project:follow-up-parent");
+      const runId = RunId.make("run:follow-up-parent");
+      const rootNodeId = NodeId.make("node:follow-up-parent-root");
+      yield* seedParentWithTerminalTask({
+        threadId,
+        projectId,
+        runId,
+        rootNodeId,
+        taskId: NodeId.make("node:follow-up-parent-settled"),
+        deliveryState: "delivered",
+        now,
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.metadata.update",
+        commandId: CommandId.make("command:follow-up-parent:orchestrator"),
+        threadId,
+        orchestrator: true,
+      });
+      const child = yield* seedRestartCancelledChild({
+        parentThreadId: threadId,
+        projectId,
+        parentRunId: runId,
+        rootNodeId,
+        name: "follow-up-child",
+        completionWake: "always",
+        continuationPending: false,
+        runStatus: "completed",
+        now,
+      });
+      // The first turn is the task's result, which reaches the parent on its own path.
+      yield* orchestrator.recoverDelegatedTasks;
+
+      const afterSequence = yield* eventSink.latestSequence();
+      const followUpRunId = RunId.make("run:follow-up-child:2");
+      yield* eventSink.write({
+        commandId: CommandId.make("command:follow-up-child:turns"),
+        events: [
+          // A repeated update of the result turn is not a follow-up.
+          {
+            ...runEvent({
+              threadId: child.childThreadId,
+              runId: child.childRunId,
+              ordinal: 1,
+              status: "completed",
+              now,
+            }),
+            id: EventId.make("event:follow-up-child:1:repeated"),
+          },
+          runEvent({
+            threadId: child.childThreadId,
+            runId: followUpRunId,
+            ordinal: 2,
+            status: "completed",
+            now: DateTime.add(now, { seconds: 1 }),
+          }),
+        ],
+      });
+      const reported = yield* eventSink
+        .stream({ threadId, afterSequence, eventType: "message.updated" })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "message.updated" &&
+              stored.event.payload.notification?.source.kind === "delegated_task",
+          ),
+          Stream.take(1),
+          Stream.runHead,
+        );
+      assert.isTrue(reported._tag === "Some");
+
+      const parent = yield* orchestrator.getThreadProjection(threadId);
+      const reports = parent.messages.filter(
+        (message) => message.notification?.source.kind === "delegated_task",
+      );
+      assert.deepEqual(
+        reports.map((message) => [message.id, message.notification]),
+        [
+          [
+            MessageId.make(`message:delegated-follow-up:${followUpRunId}`),
+            {
+              source: {
+                kind: "delegated_task",
+                taskIds: [child.taskId],
+                childThreadId: child.childThreadId,
+              },
+              outcome: "completed",
+              summary: "follow-up-child: finished",
+              detail: "Child task completed without an assistant result.",
+            },
+          ],
+        ],
+      );
+      assert.include(reports[0]?.text ?? "", `childThreadId ${child.childThreadId}`);
+    }),
+  );
+});

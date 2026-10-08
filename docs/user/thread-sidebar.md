@@ -47,12 +47,17 @@ and worktree while you stay in the new thread composer. This requires a Git proj
 
 On web and desktop, turn on **Orchestrate** in the composer to make a thread an orchestrator. You talk
 to one chat; its agent splits your request into tasks and hands each one to its own
-thread, on its own branch in its own worktree. When a task finishes, the
-orchestrator reports the result back in the chat. You can also turn it on from the
+thread, on its own branch in its own worktree. You can also turn it on from the
 command palette with **Turn on orchestrator mode**.
 
+Keep talking to the orchestrator about work already under way. It sends a
+correction or follow-up to the thread that owns that work, splits a message that
+touches several threads, and asks when it cannot tell which thread you mean.
+Whenever a thread finishes, its task or a later follow-up, the orchestrator
+reports the result in the chat.
+
 The **Threads** tab in the right panel lists the delegated threads as a checklist.
-Select one to watch what its agent is doing and to send it a message: a running
+Select one to watch what its agent is doing and to send it a message directly: a running
 thread takes it as a steer, or as its next turn when its agent cannot be steered
 mid-turn. A finished thread takes it as a follow-up. Open the full thread from the
 arrow in its header. Collapse the panel with the right-panel toggle or `mod+alt+b`.

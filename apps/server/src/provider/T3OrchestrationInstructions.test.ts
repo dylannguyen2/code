@@ -103,4 +103,47 @@ describe("T3 orchestration provider instructions", () => {
 
     assert.equal(t3OrchestratorModePrompt({ prompt: "/compact", orchestrator: true }), "/compact");
   });
+
+  it("lists an orchestrator's delegated threads so it can route the user's message", () => {
+    const prompt = "Make the export button blue.";
+    const routed = t3OrchestratorModePrompt({
+      prompt,
+      orchestrator: true,
+      delegatedThreads: [
+        {
+          title: "Add CSV export",
+          childThreadId: "thread:export",
+          taskId: "node:export",
+          branch: "t3/csv-export",
+          state: "done",
+        },
+        {
+          title: "Settings page",
+          childThreadId: "thread:settings",
+          taskId: "node:settings",
+          branch: null,
+          state: "working",
+        },
+      ],
+    });
+    assert.include(
+      routed,
+      [
+        "<t3_code_delegated_threads>",
+        '- "Add CSV export": done, childThreadId thread:export, taskId node:export, branch t3/csv-export',
+        '- "Settings page": working, childThreadId thread:settings, taskId node:settings',
+        "</t3_code_delegated_threads>",
+      ].join("\n"),
+    );
+    assert.isTrue(routed.endsWith(prompt));
+    assert.include(
+      t3OrchestratorModePrompt({ prompt, orchestrator: true, delegatedThreads: [] }),
+      "<t3_code_delegated_threads>\nNone yet.\n</t3_code_delegated_threads>",
+    );
+    // An unread list is left out rather than reported empty.
+    assert.notInclude(
+      t3OrchestratorModePrompt({ prompt, orchestrator: true }),
+      "t3_code_delegated_threads",
+    );
+  });
 });

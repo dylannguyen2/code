@@ -5372,6 +5372,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: WorkEntryRowP
       parentRef={scopeThreadRef(ctx.activeThreadEnvironmentId, item.threadId)}
       childThreadId={childThreadId}
       outcome={item.outcome}
+      detail={item.detail}
       createdAt={props.workEntry.createdAt}
       timestampFormat={ctx.timestampFormat}
       providerStatuses={ctx.providerStatuses}

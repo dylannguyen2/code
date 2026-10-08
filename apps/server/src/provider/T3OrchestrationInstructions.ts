@@ -37,35 +37,59 @@ When a chart, table, diagram, image collage, or mockup would say more than prose
 `;
 
 const T3_CODE_ORCHESTRATOR_MODE_INSTRUCTIONS = `<t3_code_orchestrator_mode>
-You are the orchestrator for this thread. The user talks to you, and delegated threads do the work.
-- Split the request into independent tasks. Start each with the t3-code \`delegate_task\` tool using mode='async' and workspace='worktree', so every task runs on its own branch in its own git worktree. Give each a short title and a self-contained prompt: the goal, the relevant files and constraints, and to commit its work and end with a brief summary of what changed and what is left.
+You are the orchestrator for this thread. The user talks only to you and reads only this chat; delegated threads do the work.
+- Split new work into independent tasks. Start each with the t3-code \`delegate_task\` tool using mode='async' and workspace='worktree', so every task runs on its own branch in its own git worktree. Give each a short title and a self-contained prompt: the goal, the relevant files and constraints, and to commit its work and end with a brief summary of what changed and what is left.
 - Use workspace='shared' only for read-only investigation that must see this checkout's uncommitted changes.
-- Do not implement tasks yourself unless the user asks you to.
-- After delegating, tell the user in a sentence or two what you started, then end your turn. Each finished task wakes you with its result: report it to the user concisely, then delegate follow-up work if it is needed. The user can also watch and steer any delegated thread directly.
-- To redirect a task that is still running, send to its childThreadId with \`t3_thread_send\` mode='steer'. To stop one, use \`task_cancel\`.
+- Route everything about work a delegated thread owns (a follow-up, a correction, a question, review feedback) to that thread with \`t3_thread_send\` mode='auto' on its childThreadId, rather than starting a new task. Pass on what the user said with any context the thread lacks. Split a message that touches several threads, and send each its part. Match threads by the list below. Ask the user only when you cannot tell which thread a message is about.
+- Answer questions about progress from what threads reported, and use \`t3_thread_read\` to check a thread's latest work. Do not implement tasks yourself unless the user asks you to.
+- After delegating or routing, tell the user in a sentence or two what went where, then end your turn instead of waiting. Every thread wakes you when it finishes, whether its task or a later follow-up: report each result to the user concisely.
+- To stop a thread's work, use \`task_cancel\` with its taskId.
 </t3_code_orchestrator_mode>`;
 
 const T3_CODE_ORCHESTRATOR_MODE_OFF_INSTRUCTIONS = `<t3_code_orchestrator_mode>
 Orchestrator mode is off. Do the work in this thread directly unless the user asks you to delegate.
 </t3_code_orchestrator_mode>`;
 
+/** A thread the orchestrator delegated, as it routes messages by them. */
+export interface T3DelegatedThreadSummary {
+  readonly title: string;
+  readonly childThreadId: string;
+  readonly taskId: string;
+  readonly branch: string | null;
+  readonly state: "working" | "waiting for input" | "done" | "failed" | "stopped";
+}
+
+function delegatedThreadList(threads: ReadonlyArray<T3DelegatedThreadSummary>): string {
+  const lines = threads.map(
+    (thread) =>
+      `- ${JSON.stringify(thread.title)}: ${thread.state}, childThreadId ${thread.childThreadId}, taskId ${thread.taskId}${thread.branch === null ? "" : `, branch ${thread.branch}`}`,
+  );
+  return `<t3_code_delegated_threads>\n${lines.length === 0 ? "None yet." : lines.join("\n")}\n</t3_code_delegated_threads>`;
+}
+
 /**
  * Orchestrator threads restate their role with every message the user writes,
  * so turning the mode on or off takes effect on the next turn for every
  * provider. `false` means the user turned the mode off, which is restated too
- * because the provider still remembers the earlier instructions.
+ * because the provider still remembers the earlier instructions. An
+ * orchestrator also gets its delegated threads as they stand, to route by.
  */
 export function t3OrchestratorModePrompt(input: {
   readonly prompt: string;
   readonly orchestrator: boolean | undefined;
+  /** Left out when they could not be read. */
+  readonly delegatedThreads?: ReadonlyArray<T3DelegatedThreadSummary> | undefined;
 }): string {
   if (input.orchestrator === undefined) return input.prompt;
   // Native slash commands must remain at the start of the prompt.
   if (input.prompt.trimStart().startsWith("/")) return input.prompt;
-  const instructions = input.orchestrator
-    ? T3_CODE_ORCHESTRATOR_MODE_INSTRUCTIONS
-    : T3_CODE_ORCHESTRATOR_MODE_OFF_INSTRUCTIONS;
-  return `${instructions}\n\n${input.prompt}`;
+  if (!input.orchestrator)
+    return `${T3_CODE_ORCHESTRATOR_MODE_OFF_INSTRUCTIONS}\n\n${input.prompt}`;
+  const threads =
+    input.delegatedThreads === undefined
+      ? ""
+      : `${delegatedThreadList(input.delegatedThreads)}\n\n`;
+  return `${T3_CODE_ORCHESTRATOR_MODE_INSTRUCTIONS}\n\n${threads}${input.prompt}`;
 }
 
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `

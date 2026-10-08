@@ -8,6 +8,8 @@ import {
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
+  type OrchestrationV2Subagent,
+  type OrchestrationV2ThreadShell,
   type OrchestrationV2TurnItem,
   RunId,
   ThreadId,
@@ -49,7 +51,10 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import { makeProviderFailure } from "./ProviderFailure.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import { t3OrchestratorModePrompt } from "../provider/T3OrchestrationInstructions.ts";
+import {
+  type T3DelegatedThreadSummary,
+  t3OrchestratorModePrompt,
+} from "../provider/T3OrchestrationInstructions.ts";
 import {
   isRestartNoteContinuation,
   pendingRestartCancelledBackgroundWork,
@@ -65,6 +70,32 @@ export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStart
 ) {}
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
+
+/** A live run on the thread outranks its task, which settles with the first run. */
+function delegatedThreadState(
+  shell: OrchestrationV2ThreadShell,
+  task: OrchestrationV2Subagent,
+): T3DelegatedThreadSummary["state"] {
+  if (shell.pendingRuntimeRequest !== null || shell.activityRunStatus === "waiting") {
+    return "waiting for input";
+  }
+  if (shell.activityRunStatus != null) return "working";
+  switch (task.status) {
+    case "completed":
+    case "idle":
+      return "done";
+    case "failed":
+      return "failed";
+    case "cancelled":
+    case "interrupted":
+      return "stopped";
+    case "waiting":
+      return "waiting for input";
+    case "pending":
+    case "running":
+      return "working";
+  }
+}
 
 /** Claude refuses to replace a process running background work before it reads the prompt. */
 const refusedBeforePrompt = (error: unknown): boolean =>
@@ -220,6 +251,42 @@ export const layer: Layer.Layer<
             }),
       };
     };
+
+    // Where each thread an orchestrator delegated stands, so it can route the
+    // user's message. Advisory: a failed read leaves the list out.
+    const delegatedThreadsOf = (subagents: ReadonlyArray<OrchestrationV2Subagent>) =>
+      Effect.forEach(
+        subagents.flatMap((task) =>
+          task.origin === "app_owned" && task.childThreadId !== null
+            ? [{ task, childThreadId: task.childThreadId }]
+            : [],
+        ),
+        ({ task, childThreadId }) =>
+          projectionStore.getThreadShell(childThreadId).pipe(
+            Effect.map((shell): ReadonlyArray<T3DelegatedThreadSummary> => {
+              if (shell === null || shell.deletedAt !== null || shell.archivedAt !== null) {
+                return [];
+              }
+              return [
+                {
+                  title: shell.title,
+                  childThreadId,
+                  taskId: task.id,
+                  branch: shell.branch,
+                  state: delegatedThreadState(shell, task),
+                },
+              ];
+            }),
+          ),
+        { concurrency: 8 },
+      ).pipe(
+        Effect.map((rows) => rows.flat()),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to list an orchestrator's delegated threads", { cause }).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      );
 
     const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (input: {
       readonly threadId: ThreadId;
@@ -961,6 +1028,10 @@ export const layer: Layer.Layer<
           ? t3OrchestratorModePrompt({
               prompt: composedText,
               orchestrator: projection.thread.orchestrator,
+              delegatedThreads:
+                projection.thread.orchestrator === true
+                  ? yield* delegatedThreadsOf(projection.subagents)
+                  : undefined,
             })
           : composedText;
       // Delivered once: this run's provider turn marks the work as told. A

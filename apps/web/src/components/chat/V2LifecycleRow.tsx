@@ -356,6 +356,8 @@ export function SubagentNotificationLink(props: {
   readonly parentRef: ScopedThreadRef;
   readonly childThreadId: ThreadId;
   readonly outcome: OrchestrationV2Notification["outcome"];
+  /** What this event reported, when it differs from the subagent's own result. */
+  readonly detail: string | undefined;
   readonly createdAt: string;
   readonly timestampFormat: TimestampFormat;
   readonly providerStatuses: ReadonlyArray<ServerProvider>;
@@ -392,6 +394,7 @@ export function SubagentNotificationLink(props: {
         status: NOTIFICATION_OUTCOME_STATUS[props.outcome],
         label: NOTIFICATION_OUTCOME_LABEL[props.outcome],
         timestamp: formatShortTimestamp(props.createdAt, props.timestampFormat),
+        detail: props.detail,
       }}
     />
   );
@@ -418,6 +421,7 @@ function SubagentTimelineLink(props: {
     readonly status: OrchestrationV2TurnItem["status"] | null;
     readonly label: string;
     readonly timestamp: string;
+    readonly detail?: string | undefined;
   };
 }) {
   const agent = useAtomValue(
@@ -431,7 +435,8 @@ function SubagentTimelineLink(props: {
   const result = (agent?.result ?? props.result)?.trim();
   const progress = (agent?.progress ?? props.progress)?.trim();
   const settled = SETTLED_SUBAGENT_STATUSES.has(status ?? liveStatus);
-  const rawDetail = settled ? result || progress : progress || result;
+  const rawDetail =
+    props.event?.detail?.trim() || (settled ? result || progress : progress || result);
   const detail =
     rawDetail && !GENERIC_CHILD_END.test(rawDetail) ? plainDetail(rawDetail) || null : null;
   const failed = status === "failed";

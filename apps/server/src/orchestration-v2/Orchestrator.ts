@@ -504,6 +504,8 @@ function pendingThreadTitleGenerationEffect(
 }
 
 const WORKSPACE_PREPARATION_INPUT = "Preparing workspace";
+/** How much of a delegated thread's follow-up result its orchestrator's wake carries. */
+const DELEGATED_FOLLOW_UP_RESULT_LIMIT = 4_000;
 
 /** A reopened preparation item drops the output and exit code of the attempt it replaces. */
 function withoutPreparationResult(
@@ -10647,6 +10649,80 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) =>
     threadDispatch.withLock(commandThreadId(command), dispatchWithReceiptEffect(command));
 
+  /**
+   * An orchestrator's chat is the one place its user reads, but a delegated
+   * task reports its result once. Every later turn its thread finishes, after
+   * a follow-up from the orchestrator or from the user, is reported to the
+   * orchestrator as a wake. Stopped turns are not: whoever stopped one knows.
+   */
+  const reportDelegatedFollowUp = (input: {
+    readonly parentThreadId: ThreadId;
+    readonly childThreadId: ThreadId;
+    readonly run: OrchestrationV2Run;
+  }) =>
+    Effect.gen(function* () {
+      const { parentThreadId, childThreadId, run } = input;
+      if (run.status !== "completed" && run.status !== "failed") return;
+      const parent = yield* projectionStore.getThreadRecords(parentThreadId, [
+        "subagents",
+        "contextTransfers",
+      ]);
+      if (
+        parent.thread.orchestrator !== true ||
+        parent.thread.archivedAt !== null ||
+        parent.thread.deletedAt !== null
+      ) {
+        return;
+      }
+      const task = parent.subagents.find(
+        (candidate) =>
+          candidate.origin === "app_owned" && candidate.childThreadId === childThreadId,
+      );
+      const resultRunId = parent.contextTransfers.find(
+        (transfer) =>
+          transfer.type === "subagent_result" && transfer.sourceThreadId === childThreadId,
+      )?.sourcePoint.runId;
+      if (task === undefined || resultRunId === undefined) return;
+      const child = yield* projectionStore.getThreadRecords(
+        childThreadId,
+        ["runs", "messages", "turnItems"],
+        {
+          messageRoles: ["assistant"],
+          messageRunIds: [run.id],
+          turnItemRunId: run.id,
+          turnItemTypes: ["assistant_message", "error"],
+        },
+      );
+      const resultRun = child.runs.find((candidate) => candidate.id === resultRunId);
+      // The task result covers every turn up to the one it was read from.
+      if (resultRun === undefined || !runRanAfter(run, resultRun)) return;
+
+      const result = subagentResultForRun(child, run).text;
+      const excerpt =
+        result.length > DELEGATED_FOLLOW_UP_RESULT_LIMIT
+          ? `${result.slice(0, DELEGATED_FOLLOW_UP_RESULT_LIMIT)}\n\n[Truncated. Read the rest with t3_thread_read.]`
+          : result;
+      const title = child.thread.title;
+      yield* dispatchWithReceipt({
+        type: "message.dispatch",
+        commandId: CommandId.make(`server:delegated-follow-up:${run.id}`),
+        threadId: parentThreadId,
+        messageId: MessageId.make(`message:delegated-follow-up:${run.id}`),
+        text: `Delegated thread "${title}" (childThreadId ${childThreadId}) ${run.status === "completed" ? "finished" : "failed"} a follow-up turn. Its final message:\n\n${excerpt}`,
+        notification: {
+          source: { kind: "delegated_task", taskIds: [task.id], childThreadId },
+          outcome: run.status,
+          summary: `${title}: ${run.status === "completed" ? "finished" : "failed"}`,
+          // The task card shows the task's own result, which is the first turn's.
+          detail: result.slice(0, DELEGATED_FOLLOW_UP_RESULT_LIMIT),
+        },
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+      });
+    });
+
   const handleTerminalRun = (stored: OrchestrationV2StoredEvent) =>
     Effect.gen(function* () {
       const threadId = stored.event.threadId;
@@ -10682,6 +10758,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const parentThreadId = yield* appOwnedSubagentParentThreadId(threadId);
       if (parentThreadId !== undefined) {
         yield* threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(threadId));
+        if (stored.event.type === "run.updated") {
+          yield* reportDelegatedFollowUp({
+            parentThreadId,
+            childThreadId: threadId,
+            run: stored.event.payload,
+          });
+        }
       }
     }).pipe(
       Effect.catchCause((cause) =>
