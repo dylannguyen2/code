@@ -75,6 +75,7 @@ export interface CreateThreadInput extends CommandMetadata {
   readonly interactionMode: ProviderInteractionMode;
   readonly branch: string | null;
   readonly worktreePath: string | null;
+  readonly orchestrator?: boolean;
 }
 
 export interface ThreadCommandInput extends CommandMetadata {
@@ -131,6 +132,8 @@ export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly regenerateTitle?: boolean;
   /** Link (object) or unlink (null) a pull request (#8160). */
   readonly linkedPullRequest?: ThreadLinkedPullRequest | null;
+  /** Turn orchestrator mode on or off. */
+  readonly orchestrator?: boolean;
 }
 
 export interface SetThreadRuntimeModeInput extends ThreadCommandInput {
@@ -150,6 +153,7 @@ interface StartThreadBootstrap {
     readonly interactionMode: ProviderInteractionMode;
     readonly branch: string | null;
     readonly worktreePath: string | null;
+    readonly orchestrator?: boolean;
     readonly createdAt: string;
   };
   readonly prepareWorktree?: {
@@ -406,6 +410,7 @@ export const createThread = Effect.fn("EnvironmentCommands.createThread")(functi
     interactionMode: input.interactionMode,
     branch: input.branch,
     worktreePath: input.worktreePath,
+    ...(input.orchestrator === true ? { orchestrator: true } : {}),
   });
 });
 
@@ -567,7 +572,8 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
       input.worktreePath !== undefined ||
       input.regenerateTitle !== undefined ||
       input.linkedPullRequest !== undefined ||
-      input.limitRecovery !== undefined
+      input.limitRecovery !== undefined ||
+      input.orchestrator !== undefined
     ) {
       result = yield* dispatch({
         type: "thread.metadata.update",
@@ -581,6 +587,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
         ...(input.linkedPullRequest === undefined
           ? {}
           : { linkedPullRequest: input.linkedPullRequest }),
+        ...(input.orchestrator === undefined ? {} : { orchestrator: input.orchestrator }),
       });
     }
     if (input.modelSelection !== undefined) {
@@ -677,6 +684,7 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
       runtimeMode: input.runtimeMode,
       interactionMode: input.interactionMode,
       workspaceStrategy,
+      ...(bootstrap?.orchestrator === true ? { orchestrator: true } : {}),
       initialMessage: {
         messageId: input.message.messageId,
         text: input.message.text,

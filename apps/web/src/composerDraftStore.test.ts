@@ -1721,6 +1721,35 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(useComposerDraftStore.getState().getDraftThread(draftId)?.startFromOrigin).toBe(false);
   });
 
+  it("keeps a draft's orchestrator choice across a reload until it is turned off", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectRef, draftId, { threadId });
+    store.setDraftThreadContext(draftId, { orchestrator: true });
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.orchestrator).toBe(true);
+
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const hydrated = persistApi
+      .getOptions()
+      .merge(
+        partializeComposerDraftStoreState(useComposerDraftStore.getState()),
+        useComposerDraftStore.getState(),
+      );
+    expect(
+      Object.values(hydrated.draftThreadsByThreadKey).find((draft) => draft.threadId === threadId)
+        ?.orchestrator,
+    ).toBe(true);
+
+    store.setDraftThreadContext(draftId, { orchestrator: false });
+    expect(useComposerDraftStore.getState().getDraftThread(draftId)?.orchestrator).toBeUndefined();
+  });
+
   it("preserves existing branch and worktree when setProjectDraftThreadId receives undefined", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectRef, draftId, {

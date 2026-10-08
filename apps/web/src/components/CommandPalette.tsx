@@ -58,6 +58,8 @@ import {
   FolderPlusIcon,
   MessageSquareDashedIcon,
   LinkIcon,
+  ListChecksIcon,
+  ListTreeIcon,
   MessageSquareIcon,
   MonitorIcon,
   MoonIcon,
@@ -110,6 +112,7 @@ import { threadEnvironment } from "../state/threads";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
+import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useScratchProject } from "../hooks/useScratchProject";
 import { useNewProject } from "../hooks/useNewProject";
@@ -737,6 +740,9 @@ function OpenCommandPaletteDialog(props: {
     reportFailure: false,
   });
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
+    reportFailure: false,
+  });
+  const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
   const { environments } = useEnvironments();
@@ -1989,6 +1995,44 @@ function OpenCommandPaletteDialog(props: {
         },
       });
     }
+  }
+
+  if (
+    activeThread !== null &&
+    activeThread.lineage.relationshipToParent !== "subagent" &&
+    activeThreadServerConfig?.environment.capabilities.orchestratorThreads === true
+  ) {
+    const thread = activeThread;
+    const threadRef = scopeThreadRef(thread.environmentId, thread.id);
+    const enabled = thread.orchestrator !== true;
+    actionItems.push({
+      kind: "action",
+      value: "action:toggle-orchestrator-mode",
+      searchTerms: ["orchestrator", "orchestrate", "delegate", "worktrees", "threads", "project"],
+      title: enabled ? "Turn on orchestrator mode" : "Turn off orchestrator mode",
+      ...(enabled
+        ? { description: "Delegate each task to its own thread and worktree, reported back here." }
+        : {}),
+      icon: <ListTreeIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        const result = await updateThreadMetadata({
+          environmentId: thread.environmentId,
+          input: { threadId: thread.id, orchestrator: enabled },
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+        if (enabled) useRightPanelStore.getState().open(threadRef, "threads");
+      },
+    });
+    actionItems.push({
+      kind: "action",
+      value: "action:open-delegated-threads",
+      searchTerms: ["threads", "delegated", "subagents", "orchestrator", "checklist"],
+      title: "Show delegated threads",
+      icon: <ListChecksIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        useRightPanelStore.getState().open(threadRef, "threads");
+      },
+    });
   }
 
   if (activeThread !== null) {

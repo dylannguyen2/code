@@ -8,6 +8,7 @@ import {
   type MessageId,
   type ModelSelection,
   type OrchestrationV2Actor,
+  type OrchestrationV2AppThread,
   type OrchestrationV2CreationSource,
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ThreadProjection,
@@ -83,6 +84,7 @@ export interface ThreadLaunchInput {
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
   readonly workspaceStrategy: ThreadLaunchWorkspaceStrategy;
+  readonly orchestrator?: boolean;
   readonly initialMessage?: ThreadLaunchInitialMessage;
   readonly importedNativeThread?: {
     readonly ref: {
@@ -157,6 +159,22 @@ export class ThreadLaunchService extends Context.Service<
     readonly retryPreparation: (
       input: ThreadLaunchRetryInput,
     ) => Effect.Effect<Orchestrator.OrchestratorV2DispatchResult, Orchestrator.OrchestratorV2Error>;
+    /**
+     * Prepares the workspace of a run another command left preparing, such as
+     * a delegated task in its own worktree, then releases the run. A run past
+     * preparation, or one already being prepared, is left alone. A failure
+     * fails the run rather than the caller.
+     */
+    readonly prepareDeferredRun: (input: ThreadLaunchRetryInput) => Effect.Effect<void>;
+    /**
+     * Where a delegated child's new worktree starts: the parent's branch, or
+     * the branch its checkout has checked out when the parent follows the
+     * current checkout. Null when that checkout is not on a branch.
+     */
+    readonly delegatedWorktreeStrategy: (input: {
+      readonly parent: Pick<OrchestrationV2AppThread, "projectId" | "branch" | "worktreePath">;
+      readonly branch?: string;
+    }) => Effect.Effect<Extract<ThreadLaunchWorkspaceStrategy, { type: "worktree" }> | null>;
   }
 >()("t3/orchestration-v2/ThreadLaunchService") {}
 
@@ -771,6 +789,7 @@ const make = Effect.gen(function* () {
                 commandId: input.commandId,
                 threadId: candidateThreadId,
                 expectedEmpty: true,
+                ...(input.orchestrator === undefined ? {} : { orchestrator: input.orchestrator }),
               })
             : threads.dispatch({
                 type: "thread.create",
@@ -783,6 +802,7 @@ const make = Effect.gen(function* () {
                 interactionMode: input.interactionMode,
                 branch: initialBranch,
                 worktreePath: initialWorktreePath,
+                ...(input.orchestrator === true ? { orchestrator: true } : {}),
                 ...(input.importedNativeThread === undefined
                   ? {}
                   : { importedNativeThread: input.importedNativeThread }),
@@ -906,19 +926,13 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const retryPreparation: ThreadLaunchService["Service"]["retryPreparation"] = Effect.fn(
-    "ThreadLaunchService.retryPreparation",
-  )(function* (input) {
-    const dispatched = yield* threads.dispatch({
-      type: "prepared-run.retry",
-      commandId: input.commandId,
-      threadId: input.threadId,
-      runId: input.runId,
-    });
-    // A replayed retry finds the run already past preparation, or prepared by
-    // the attempt that first reserved this command.
-    // From here the run is preparing again; anything that stops preparation
-    // from being scheduled must fail it, or it would wait in preparing forever.
+  // A replayed request finds the run already past preparation, or prepared by
+  // the attempt that first reserved this command. Once the run is preparing,
+  // anything that stops preparation from being scheduled must fail it, or it
+  // would wait in preparing forever.
+  const preparePreparingRun = Effect.fn("ThreadLaunchService.preparePreparingRun")(function* (
+    input: ThreadLaunchRetryInput,
+  ) {
     const scheduled = yield* Effect.gen(function* () {
       const projection = yield* threads.getThreadProjection(input.threadId);
       const run = projection.runs.find((candidate) => candidate.id === input.runId);
@@ -932,6 +946,18 @@ const make = Effect.gen(function* () {
     if (Exit.isFailure(scheduled)) {
       yield* failPreparedRun(input, input.threadId, input.runId, Cause.squash(scheduled.cause));
     }
+  });
+
+  const retryPreparation: ThreadLaunchService["Service"]["retryPreparation"] = Effect.fn(
+    "ThreadLaunchService.retryPreparation",
+  )(function* (input) {
+    const dispatched = yield* threads.dispatch({
+      type: "prepared-run.retry",
+      commandId: input.commandId,
+      threadId: input.threadId,
+      runId: input.runId,
+    });
+    yield* preparePreparingRun(input);
     return dispatched;
   });
 
@@ -977,7 +1003,35 @@ const make = Effect.gen(function* () {
     );
   };
 
-  return ThreadLaunchService.of({ launch, retryPreparation });
+  const delegatedWorktreeStrategy: ThreadLaunchService["Service"]["delegatedWorktreeStrategy"] =
+    Effect.fn("ThreadLaunchService.delegatedWorktreeStrategy")(function* ({ parent, branch }) {
+      let baseRef = parent.branch;
+      if (baseRef === null) {
+        const cwd =
+          parent.worktreePath ??
+          Option.getOrUndefined(
+            yield* projects.getById(parent.projectId).pipe(Effect.orElseSucceed(Option.none)),
+          )?.workspaceRoot;
+        if (cwd === undefined) return null;
+        const status = yield* git.localStatus({ cwd }).pipe(Effect.option);
+        baseRef = Option.isSome(status) && status.value.isRepo ? status.value.refName : null;
+      }
+      if (baseRef === null) return null;
+      // Children build on the parent's local commits, not on origin.
+      return {
+        type: "worktree" as const,
+        baseRef,
+        startFromOrigin: false,
+        ...(branch === undefined ? {} : { branch }),
+      };
+    });
+
+  return ThreadLaunchService.of({
+    launch,
+    retryPreparation,
+    prepareDeferredRun: preparePreparingRun,
+    delegatedWorktreeStrategy,
+  });
 });
 
 export const layer = Layer.effect(ThreadLaunchService, make);

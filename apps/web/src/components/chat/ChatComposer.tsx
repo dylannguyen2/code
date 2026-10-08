@@ -1083,6 +1083,7 @@ import {
   FileIcon,
   BotIcon,
   CircleAlertIcon,
+  ListTreeIcon,
   PaperclipIcon,
   PencilRulerIcon,
   PlayIcon,
@@ -1350,6 +1351,50 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
       </Tooltip>
 
       {interactionModeToggle}
+    </>
+  );
+});
+
+const ORCHESTRATOR_MODE_TOOLTIP_ON =
+  "Orchestrator mode: the agent delegates each task to its own thread and worktree, and reports back here. Click to work in this thread directly.";
+const ORCHESTRATOR_MODE_TOOLTIP_OFF =
+  "Click for orchestrator mode: the agent delegates each task to its own thread and worktree, and reports back here.";
+
+const ComposerFooterOrchestratorToggle = memo(function ComposerFooterOrchestratorToggle(props: {
+  enabled: boolean;
+  size?: "sm" | "xs";
+  onToggle: () => void;
+}) {
+  const size = props.size ?? "sm";
+  const tooltip = props.enabled ? ORCHESTRATOR_MODE_TOOLTIP_ON : ORCHESTRATOR_MODE_TOOLTIP_OFF;
+  return (
+    <>
+      <ComposerControlSeparator size={size} />
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <ComposerControl
+              size={size}
+              className="shrink-0 whitespace-nowrap"
+              aria-pressed={props.enabled}
+              type="button"
+              onClick={props.onToggle}
+              aria-label={
+                props.enabled ? "Turn off orchestrator mode" : "Turn on orchestrator mode"
+              }
+              data-orchestrator-mode-toggle
+            />
+          }
+        >
+          <ComposerControlIcon icon={ListTreeIcon} size={size} />
+          <span data-composer-control-label className="sr-only sm:not-sr-only">
+            Orchestrate
+          </span>
+        </TooltipTrigger>
+        <TooltipPopup side="top" className="max-w-72">
+          {tooltip}
+        </TooltipPopup>
+      </Tooltip>
     </>
   );
 });
@@ -1692,6 +1737,9 @@ export interface ChatComposerProps {
   toggleInteractionMode: () => void;
   handleRuntimeModeChange: (mode: RuntimeMode) => void;
   handleInteractionModeChange: (mode: ProviderInteractionMode) => void;
+  /** Whether this thread orchestrates; null where orchestrator mode is unavailable. */
+  orchestratorMode: boolean | null;
+  onToggleOrchestratorMode: () => void;
 
   focusComposer: () => void;
   scheduleComposerFocus: () => void;
@@ -1799,6 +1847,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     toggleInteractionMode,
     handleRuntimeModeChange,
     handleInteractionModeChange,
+    orchestratorMode,
+    onToggleOrchestratorMode,
     focusComposer,
     scheduleComposerFocus,
     setThreadError,
@@ -5387,10 +5437,19 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const iconOnlyBlockCount = composerControlsCollapsed
     ? restingControlsIconOnlyBlockCount
     : expandedControlsLayout.iconOnlyBlockCount;
+  // Blocks overflow into the "more" menu from the end of this order.
+  const restingBlockIds = [
+    ...(providerTraitsPicker ? ["traits"] : []),
+    "mode",
+    ...(orchestratorMode === null ? [] : ["orchestrator"]),
+  ];
+  const hiddenRestingBlockIds = restingBlockIds.slice(
+    restingBlockIds.length - restingHiddenBlockCount,
+  );
   const restingProviderTraitsPicker = renderProviderTraitsPicker({
     ...providerTraitsPickerInput,
     size: composerControlsCollapsed ? "xs" : "sm",
-    hidden: composerControlsHidden || restingHiddenBlockCount > 1,
+    hidden: composerControlsHidden || hiddenRestingBlockIds.includes("traits"),
   });
   const restingBlockDefs = [
     ...(providerTraitsPicker
@@ -5415,16 +5474,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           runtimeMode={compatibleRuntimeMode}
           runtimeModeOptions={compatibleRuntimeModeOptions}
           size={composerControlsCollapsed ? "xs" : "sm"}
-          hidden={composerControlsHidden || restingHiddenBlockCount > 0}
+          hidden={composerControlsHidden || hiddenRestingBlockIds.includes("mode")}
           onToggleInteractionMode={toggleInteractionMode}
           onRuntimeModeChange={handleRuntimeModeChange}
         />
       ),
     },
+    ...(orchestratorMode === null
+      ? []
+      : [
+          {
+            id: "orchestrator",
+            content: (
+              <ComposerFooterOrchestratorToggle
+                enabled={orchestratorMode}
+                size={composerControlsCollapsed ? "xs" : "sm"}
+                onToggle={onToggleOrchestratorMode}
+              />
+            ),
+          },
+        ]),
   ];
-  const hiddenRestingBlockIds = restingBlockDefs
-    .slice(restingBlockDefs.length - restingHiddenBlockCount)
-    .map((def) => def.id);
   const composerControls = showProviderUnavailable ? (
     <ComposerControl
       type="button"
@@ -5584,6 +5654,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             }
             onToggleInteractionMode={toggleInteractionMode}
             onRuntimeModeChange={handleRuntimeModeChange}
+            orchestratorMode={
+              hiddenRestingBlockIds.includes("orchestrator") ? orchestratorMode : null
+            }
+            onToggleOrchestratorMode={onToggleOrchestratorMode}
           />
         </div>
       </>

@@ -43,6 +43,25 @@ in a new thread's model picker to add or remove them. A regular click returns to
 single model. Choose a base branch and send. Each selection starts a separate thread
 and worktree while you stay in the new thread composer. This requires a Git project.
 
+## Orchestrate work across threads
+
+On web and desktop, turn on **Orchestrate** in the composer to make a thread an orchestrator. You talk
+to one chat; its agent splits your request into tasks and hands each one to its own
+thread, on its own branch in its own worktree. When a task finishes, the
+orchestrator reports the result back in the chat. You can also turn it on from the
+command palette with **Turn on orchestrator mode**.
+
+The **Threads** tab in the right panel lists the delegated threads as a checklist.
+Select one to watch what its agent is doing and to send it a message: a running
+thread takes it as a steer, or as its next turn when its agent cannot be steered
+mid-turn. A finished thread takes it as a follow-up. Open the full thread from the
+arrow in its header. Collapse the panel with the right-panel toggle or `mod+alt+b`.
+
+Worktrees start from the orchestrator's branch, so delegated threads see its
+committed work but not its uncommitted changes. They stay after the work is done,
+like other worktrees. Turning orchestrator mode off takes effect on the next
+message.
+
 ## Pin and reorder threads
 
 Pin a thread from its menu to keep it above your active work.

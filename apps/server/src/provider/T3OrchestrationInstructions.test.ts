@@ -5,6 +5,7 @@ import {
   t3AcpPromptWithInstructions,
   t3OrchestrationPromptForFirstRun,
   t3OrchestrationSystemPrompt,
+  t3OrchestratorModePrompt,
 } from "./T3OrchestrationInstructions.ts";
 
 describe("T3 orchestration provider instructions", () => {
@@ -86,5 +87,20 @@ describe("T3 orchestration provider instructions", () => {
     assert.include(withoutMcp, "T3 Code interaction mode: Default");
     assert.notInclude(withoutMcp, "T3 Code collaborative browser");
     assert.notInclude(withoutMcp, "T3 Code orchestration");
+  });
+
+  it("restates orchestrator mode on each prompt once a thread has used it", () => {
+    const prompt = "Add an export button and a settings page.";
+    assert.equal(t3OrchestratorModePrompt({ prompt, orchestrator: undefined }), prompt);
+
+    const on = t3OrchestratorModePrompt({ prompt, orchestrator: true });
+    assert.include(on, "workspace='worktree'");
+    assert.isTrue(on.endsWith(prompt));
+
+    const off = t3OrchestratorModePrompt({ prompt, orchestrator: false });
+    assert.include(off, "Orchestrator mode is off");
+    assert.isTrue(off.endsWith(prompt));
+
+    assert.equal(t3OrchestratorModePrompt({ prompt: "/compact", orchestrator: true }), "/compact");
   });
 });

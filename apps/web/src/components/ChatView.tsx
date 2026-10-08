@@ -440,6 +440,7 @@ import { ExpandedImageDialog } from "./chat/ExpandedImageDialog";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { MessagesTimeline, type MessagesTimelineHistoryControls } from "./chat/MessagesTimeline";
+import { DelegatedThreadsPanel } from "./chat/DelegatedThreadsPanel";
 import { ProviderSubagentBar } from "./chat/ProviderSubagentBar";
 import { getTriggerDisplayModelName } from "./chat/providerIconUtils";
 import { resolveTimelineIsAtEnd, worktreeSetupAgentStarted } from "./chat/MessagesTimeline.logic";
@@ -5381,6 +5382,44 @@ export default function ChatView(props: ChatViewProps) {
     if (!interactionModeEnabled) return;
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode, interactionModeEnabled]);
+  // A draft carries the choice until its first send creates the thread; a
+  // delegated child does the work and never orchestrates.
+  const orchestratorMode: boolean | null =
+    serverConfig?.environment.capabilities.orchestratorThreads !== true || activeProject === null
+      ? null
+      : isServerThread
+        ? serverProjection === null ||
+          serverProjection.thread.lineage.relationshipToParent === "subagent"
+          ? null
+          : serverProjection.thread.orchestrator === true
+        : draftThread
+          ? draftThread.orchestrator === true
+          : null;
+  const toggleOrchestratorMode = useCallback(() => {
+    if (orchestratorMode === null) return;
+    const enabled = !orchestratorMode;
+    if (!isServerThread) {
+      if (draftId) setDraftThreadContext(draftId, { orchestrator: enabled });
+      return;
+    }
+    if (activeThreadRef === null) return;
+    void updateThreadMetadata({
+      environmentId: activeThreadRef.environmentId,
+      input: { threadId: activeThreadRef.threadId, orchestrator: enabled },
+    }).then((result) => {
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+        toastManager.add({ type: "error", title: "Could not change orchestrator mode" });
+      }
+    });
+    if (enabled) useRightPanelStore.getState().open(activeThreadRef, "threads");
+  }, [
+    activeThreadRef,
+    draftId,
+    isServerThread,
+    orchestratorMode,
+    setDraftThreadContext,
+    updateThreadMetadata,
+  ]);
   const openProviderSetup = useCallback(
     (instanceId: ProviderInstanceId) => {
       void navigate({
@@ -5442,6 +5481,22 @@ export default function ChatView(props: ChatViewProps) {
     if (!activeThreadRef || !pullRequestsSurfaceAvailable) return;
     useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   }, [activeThreadRef, pullRequestsSurfaceAvailable]);
+  const isOrchestratorThread = serverProjection?.thread.orchestrator === true;
+  // Counted from the projection alone: joining child shells would re-render
+  // this view on every streaming update of every child.
+  const delegatedThreadCount = useMemo(
+    () =>
+      serverProjection?.subagents.filter(
+        (task) => task.origin === "app_owned" && task.childThreadId !== null,
+      ).length ?? 0,
+    [serverProjection?.subagents],
+  );
+  const threadsSurfaceAvailable =
+    isServerThread && (isOrchestratorThread || delegatedThreadCount > 0);
+  const addThreadsSurface = useCallback(() => {
+    if (!activeThreadRef || !threadsSurfaceAvailable) return;
+    useRightPanelStore.getState().open(activeThreadRef, "threads");
+  }, [activeThreadRef, threadsSurfaceAvailable]);
   const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(
     activeThreadRef?.environmentId ?? null,
   );
@@ -5836,6 +5891,53 @@ export default function ChatView(props: ChatViewProps) {
     pullRequestsSurfaceAvailable,
     visiblePullRequestCount,
 
+    settings.proactivePanelsEnabled,
+    shouldUsePlanSidebarSheet,
+    threadDetailLoading,
+  ]);
+  // With proactive panels on, a newly delegated thread opens the Threads tab,
+  // unless the user arranged the panel since this thread was opened. The
+  // baseline waits for the projection so a loading thread does not count as
+  // delegating everything it already had.
+  const observedDelegatedThreadsRef = useRef<{
+    readonly threadKey: string;
+    readonly count: number;
+    readonly userActionRevision: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!isServerThread || activeThreadKey === null || activeThreadRef === null) {
+      observedDelegatedThreadsRef.current = null;
+      return;
+    }
+    if (threadDetailLoading || serverProjection === null) return;
+    const panels = useRightPanelStore.getState();
+    const previous = observedDelegatedThreadsRef.current;
+    const sameThread = previous?.threadKey === activeThreadKey;
+    const userActionRevision = sameThread
+      ? previous.userActionRevision
+      : panels.getUserActionRevision(activeThreadRef);
+    observedDelegatedThreadsRef.current = {
+      threadKey: activeThreadKey,
+      count: delegatedThreadCount,
+      userActionRevision,
+    };
+    if (
+      !sameThread ||
+      delegatedThreadCount <= previous.count ||
+      !clientSettingsHydrated ||
+      !settings.proactivePanelsEnabled ||
+      shouldUsePlanSidebarSheet
+    ) {
+      return;
+    }
+    panels.openProactive(activeThreadRef, { id: "threads", kind: "threads" }, userActionRevision);
+  }, [
+    activeThreadKey,
+    activeThreadRef,
+    clientSettingsHydrated,
+    delegatedThreadCount,
+    isServerThread,
+    serverProjection,
     settings.proactivePanelsEnabled,
     shouldUsePlanSidebarSheet,
     threadDetailLoading,
@@ -9518,6 +9620,7 @@ export default function ChatView(props: ChatViewProps) {
                       interactionMode: target.interactionMode,
                       branch: activeThreadBranch,
                       worktreePath: null,
+                      ...(draftThread?.orchestrator === true ? { orchestrator: true } : {}),
                       createdAt: messageCreatedAt,
                     },
                     prepareWorktree: {
@@ -9858,6 +9961,7 @@ export default function ChatView(props: ChatViewProps) {
                       interactionMode: sendInteractionMode,
                       branch: activeThreadBranch,
                       worktreePath: activeThread.worktreePath,
+                      ...(draftThread?.orchestrator === true ? { orchestrator: true } : {}),
                       createdAt: activeThread.createdAt,
                     },
                   }
@@ -9953,6 +10057,17 @@ export default function ChatView(props: ChatViewProps) {
         failure = startResult;
       } else {
         turnStartSucceeded = true;
+        // An orchestrator works through its delegated threads, so its first
+        // send opens them beside the chat.
+        if (
+          isLocalDraftThread &&
+          draftThread?.orchestrator === true &&
+          !shouldUsePlanSidebarSheet
+        ) {
+          useRightPanelStore
+            .getState()
+            .open(scopeThreadRef(environmentId, threadIdForSend), "threads");
+        }
         setKeepFullHistory(routeThreadKey, false);
         // The turn is under way and will spend quota, so that thread's limits
         // snapshot is stale. Uploads may have outlasted a navigation, so only
@@ -11026,6 +11141,12 @@ export default function ChatView(props: ChatViewProps) {
       />
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
+    ) : renderedRightPanelSurface?.kind === "threads" && activeThreadRef ? (
+      <DelegatedThreadsPanel
+        threadRef={activeThreadRef}
+        selectedThreadId={renderedRightPanelSurface.selectedThreadId ?? null}
+        orchestrator={isOrchestratorThread}
+      />
     ) : renderedRightPanelSurface?.kind === "device" ? (
       <Suspense fallback={null}>
         <DevicePanel
@@ -11717,6 +11838,8 @@ export default function ChatView(props: ChatViewProps) {
                               getModelDisabledReason={getModelDisabledReason}
                               toggleInteractionMode={toggleInteractionMode}
                               handleRuntimeModeChange={handleRuntimeModeChange}
+                              orchestratorMode={orchestratorMode}
+                              onToggleOrchestratorMode={toggleOrchestratorMode}
                               handleInteractionModeChange={handleInteractionModeChange}
                               focusComposer={focusComposer}
                               scheduleComposerFocus={scheduleComposerFocus}
@@ -11926,6 +12049,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurface}
           onAddPullRequests={addPullRequestsSurface}
           onAddDevice={addDeviceSurface}
+          onAddThreads={addThreadsSurface}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
@@ -11933,6 +12057,7 @@ export default function ChatView(props: ChatViewProps) {
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           deviceAvailable={activeThreadRef !== null}
+          threadsAvailable={threadsSurfaceAvailable}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -11984,6 +12109,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurface}
             onAddPullRequests={addPullRequestsSurface}
             onAddDevice={addDeviceSurface}
+            onAddThreads={addThreadsSurface}
             browserAvailable={canOperatePreview && browserAvailable}
             terminalAvailable={activeProject !== null && canOperateTerminal}
             diffAvailable={isServerThread && isGitRepo}
@@ -11991,6 +12117,7 @@ export default function ChatView(props: ChatViewProps) {
             pullRequestAvailable={pullRequestSurfaceAvailable}
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
             deviceAvailable={activeThreadRef !== null}
+            threadsAvailable={threadsSurfaceAvailable}
           >
             {rightPanelContent}
           </RightPanelTabs>

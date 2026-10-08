@@ -102,6 +102,7 @@ interface HarnessOptions {
   readonly fetchRemote?: GitWorkflow.GitWorkflowService["Service"]["fetchRemote"];
   readonly hasCommit?: GitWorkflow.GitWorkflowService["Service"]["hasCommit"];
   readonly renameBranch?: GitWorkflow.GitWorkflowService["Service"]["renameBranch"];
+  readonly localStatus?: GitWorkflow.GitWorkflowService["Service"]["localStatus"];
   readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
   readonly generateTitle?: TextGeneration.TextGeneration["Service"]["generateThreadTitle"];
   readonly generateBranchName?: TextGeneration.TextGeneration["Service"]["generateBranchName"];
@@ -175,6 +176,7 @@ function makeHarness(options: HarnessOptions = {}) {
       removeWorktree,
       resolveRemoteTrackingCommit: () =>
         Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
+      ...(options.localStatus === undefined ? {} : { localStatus: options.localStatus }),
     }),
     Layer.succeed(ProjectSetupScriptRunner.ProjectSetupScriptRunner, {
       runForThread: runSetup,
@@ -1422,6 +1424,122 @@ it.effect("retries a failed workspace preparation on the same run", () => {
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("prepares a run another command deferred, such as a delegated worktree task", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const outbox = yield* EffectOutbox.EffectOutboxV2;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const threadId = ThreadId.make("thread:launch:deferred");
+    yield* threads.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("command:deferred:create"),
+      threadId,
+      projectId,
+      title: "Delegated",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    yield* threads.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("command:deferred:message"),
+      threadId,
+      messageId: MessageId.make("message:deferred"),
+      text: "Add the export button",
+      attachments: [],
+      dispatchMode: {
+        type: "defer_start",
+        workspaceStrategy: { type: "worktree", baseRef: "main", startFromOrigin: false },
+      },
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    const preparing = yield* threads.getThreadProjection(threadId);
+    assert.equal(preparing.runs[0]?.status, "preparing");
+
+    const prepare = {
+      commandId: CommandId.make("command:deferred:workspace"),
+      threadId,
+      runId: preparing.runs[0]!.id,
+    };
+    yield* launches.prepareDeferredRun(prepare);
+    yield* waitUntil(() =>
+      outbox
+        .listByCommandId(CommandId.make("command:deferred:workspace:release"))
+        .pipe(Effect.map((effects) => effects.length === 1)),
+    );
+    const prepared = yield* threads.getThreadProjection(threadId);
+    assert.equal(prepared.runs[0]?.status, "starting");
+    assert.equal(prepared.thread.worktreePath, "/repo-worktrees/feature");
+
+    // A run past preparation is left alone.
+    yield* launches.prepareDeferredRun({
+      ...prepare,
+      commandId: CommandId.make("command:deferred:workspace:again"),
+    });
+    assert.equal(harness.createWorktree.mock.calls.length, 1);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("starts a delegated worktree from the parent's branch or its checkout's", () => {
+  let checkoutBranch: string | null = "release";
+  const statusCwds: Array<string> = [];
+  const harness = makeHarness({
+    localStatus: (input) =>
+      Effect.sync(() => {
+        statusCwds.push(input.cwd);
+        return { isRepo: true, refName: checkoutBranch } as never;
+      }),
+  });
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const onBranch = yield* launches.delegatedWorktreeStrategy({
+      parent: { projectId, branch: "feature/parent", worktreePath: "/repo-worktrees/parent" },
+      branch: "feature/child",
+    });
+    assert.deepEqual(onBranch, {
+      type: "worktree",
+      baseRef: "feature/parent",
+      startFromOrigin: false,
+      branch: "feature/child",
+    });
+    assert.deepEqual(statusCwds, []);
+
+    const followsCheckout = yield* launches.delegatedWorktreeStrategy({
+      parent: { projectId, branch: null, worktreePath: null },
+    });
+    assert.deepEqual(followsCheckout, {
+      type: "worktree",
+      baseRef: "release",
+      startFromOrigin: false,
+    });
+    assert.deepEqual(statusCwds, [project.workspaceRoot]);
+
+    checkoutBranch = null;
+    const detached = yield* launches.delegatedWorktreeStrategy({
+      parent: { projectId, branch: null, worktreePath: null },
+    });
+    assert.isNull(detached);
+  }).pipe(Effect.provide(harness.layer));
+});
+
+it.effect("launches an orchestrator thread", () => {
+  const harness = makeHarness();
+  return Effect.gen(function* () {
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const launched = yield* launches.launch({
+      ...launchInput({ command: "command:launch:orchestrator", thread: "thread:orchestrator" }),
+      orchestrator: true,
+    });
+    assert.isTrue(launched.projection.thread.orchestrator);
+  }).pipe(Effect.provide(harness.layer));
+});
+
 it.effect("a retry reuses a recorded worktree without undoing its branch rename", () => {
   let setupFailures = 1;
   const harness = makeHarness({
@@ -2025,6 +2143,8 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
             ),
           ),
         retryPreparation: launches.retryPreparation,
+        prepareDeferredRun: launches.prepareDeferredRun,
+        delegatedWorktreeStrategy: launches.delegatedWorktreeStrategy,
       }),
       Effect.flip,
     );

@@ -286,6 +286,27 @@ describe("rightPanelStore", () => {
     );
   });
 
+  it("opens one Threads tab on a delegated thread and returns to its list", () => {
+    const store = useRightPanelStore.getState();
+    store.openFile(refA, "src/app.ts");
+    store.selectDelegatedThread(refA, "thread-child-1");
+    store.selectDelegatedThread(refA, "thread-child-2");
+
+    const opened = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(opened.isOpen).toBe(true);
+    expect(opened.activeSurfaceId).toBe("threads");
+    expect(opened.surfaces.filter((surface) => surface.kind === "threads")).toEqual([
+      { id: "threads", kind: "threads", selectedThreadId: "thread-child-2" },
+    ]);
+
+    store.selectDelegatedThread(refA, null);
+    expect(
+      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.find(
+        (surface) => surface.kind === "threads",
+      ),
+    ).toEqual({ id: "threads", kind: "threads", selectedThreadId: null });
+  });
+
   it("allows automatic panels for a later turn after a manual choice", () => {
     const store = useRightPanelStore.getState();
     const firstTurnRevision = store.getUserActionRevision(refA);

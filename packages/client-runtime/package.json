@@ -275,6 +275,10 @@
       "types": "./src/state/threadRelationships.ts",
       "default": "./src/state/threadRelationships.ts"
     },
+    "./state/delegated-threads": {
+      "types": "./src/state/delegatedThreads.ts",
+      "default": "./src/state/delegatedThreads.ts"
+    },
     "./state/thread-checkpoints": {
       "types": "./src/state/threadCheckpoints.ts",
       "default": "./src/state/threadCheckpoints.ts"

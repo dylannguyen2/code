@@ -187,6 +187,18 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
   runtimeMode: Schema.optional(OrchestratorMcpRuntimeMode),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
+  workspace: Schema.optional(
+    Schema.Literals(["shared", "worktree"]).annotate({
+      description:
+        "shared (default) runs the child in this thread's checkout. worktree runs it in a new git worktree branched from this thread's branch, so parallel children never edit the same files; uncommitted changes are not copied. Use worktree for independent implementation work.",
+    }),
+  ),
+  branch: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description:
+        "Branch for workspace='worktree'. Omit it to let the app name the branch from the task.",
+    }),
+  ),
 });
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
 

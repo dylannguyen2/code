@@ -2205,6 +2205,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       interactionMode: command.interactionMode,
       branch: command.branch,
       worktreePath: command.worktreePath,
+      ...(command.orchestrator === true ? { orchestrator: true } : {}),
       activeProviderThreadId: null,
       lineage: {
         parentThreadId: null,
@@ -2937,6 +2938,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 : {}),
             ...(command.branch === undefined ? {} : { branch: command.branch }),
             ...(command.worktreePath === undefined ? {} : { worktreePath: command.worktreePath }),
+            ...(command.orchestrator === undefined ? {} : { orchestrator: command.orchestrator }),
             ...(command.linkedPullRequest === undefined
               ? {}
               : {
@@ -6552,6 +6554,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ...(command.title === undefined ? {} : { title: command.title }),
         ordinal: parentProjection.subagents.length + 1,
       });
+      const workspaceStrategy = command.workspaceStrategy;
       const childThread: OrchestrationV2AppThread = {
         ...makeSubagentChildThread({
           parentThread: parentProjection.thread,
@@ -6567,6 +6570,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         }),
         runtimeMode: command.runtimeMode,
         interactionMode: command.interactionMode,
+        // A prepared workspace is bound by preparation, so the child must not
+        // start out claiming the parent's checkout.
+        ...(workspaceStrategy === undefined
+          ? {}
+          : {
+              branch: workspaceStrategy.branch ?? null,
+              worktreePath:
+                workspaceStrategy.type === "existing_worktree"
+                  ? workspaceStrategy.worktreePath
+                  : null,
+              branchPullRequest: null,
+            }),
       };
       const task: OrchestrationV2Subagent = {
         id: taskNodeId,
@@ -6684,7 +6699,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         text: command.task,
         attachments: [],
         modelSelection: command.modelSelection,
-        dispatchMode: { type: "start_immediately" },
+        // A deferred start waits in "preparing" until the caller prepares the
+        // workspace and releases the run.
+        dispatchMode:
+          workspaceStrategy === undefined
+            ? { type: "start_immediately" }
+            : { type: "defer_start", workspaceStrategy },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
       yield* dispatchMessage(childMessageCommand, events, effects);
 

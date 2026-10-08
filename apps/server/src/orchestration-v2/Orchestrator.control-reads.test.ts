@@ -624,3 +624,81 @@ it.effect("keeps delegated child pull-request links independent of the parent", 
     assert.deepEqual(parentAfterChildLink.thread.pullRequests, parent.thread.pullRequests);
   }).pipe(Effect.provide(layerTest)),
 );
+
+it.effect("delegates an orchestrator's task to a child that prepares its own worktree", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const parentThreadId = ThreadId.make("thread:orchestrator");
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make("create-orchestrator"),
+      threadId: parentThreadId,
+      projectId: ProjectId.make("project:orchestrator"),
+      title: "Orchestrator",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "main",
+      worktreePath: null,
+      orchestrator: true,
+      createdBy: "user",
+      creationSource: "web",
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make("start-orchestrator"),
+      threadId: parentThreadId,
+      messageId: MessageId.make("message:orchestrator"),
+      text: "Build the settings page and the export button",
+      attachments: [],
+      dispatchMode: { type: "start_immediately" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+    const parent = yield* projections.getThreadProjection(parentThreadId);
+    assert.isTrue(parent.thread.orchestrator);
+    const parentRun = parent.runs[0]!;
+    const workspaceStrategy = {
+      type: "worktree" as const,
+      baseRef: "main",
+      branch: "feature/export-button",
+      startFromOrigin: false,
+    };
+    yield* orchestrator.dispatch({
+      type: "delegated_task.request",
+      commandId: CommandId.make("delegate-export-button"),
+      parentThreadId,
+      parentRunId: parentRun.id,
+      parentNodeId: parentRun.rootNodeId!,
+      task: "Add the export button",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      completionWake: "always",
+      workspaceStrategy,
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+
+    const updatedParent = yield* projections.getThreadProjection(parentThreadId);
+    const childThreadId = updatedParent.subagents[0]!.childThreadId!;
+    const child = yield* projections.getThreadProjection(childThreadId);
+    // The child neither inherits the role nor claims the parent's checkout:
+    // preparation binds the new worktree before its first turn starts.
+    assert.isUndefined(child.thread.orchestrator);
+    assert.equal(child.thread.branch, "feature/export-button");
+    assert.isNull(child.thread.worktreePath);
+    assert.equal(child.runs[0]?.status, "preparing");
+    assert.deepEqual(child.runs[0]?.workspacePreparation, workspaceStrategy);
+
+    yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make("orchestrator-off"),
+      threadId: parentThreadId,
+      orchestrator: false,
+    });
+    const turnedOff = yield* projections.getThreadProjection(parentThreadId);
+    assert.isFalse(turnedOff.thread.orchestrator);
+  }).pipe(Effect.provide(layerTest)),
+);

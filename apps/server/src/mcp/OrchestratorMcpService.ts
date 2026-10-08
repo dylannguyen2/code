@@ -80,6 +80,7 @@ import {
   DispatchModeLimit,
   type DispatchModeRefusal,
 } from "../orchestration-v2/DispatchModeLimit.ts";
+import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -835,6 +836,7 @@ const make = Effect.gen(function* () {
   const providerAdapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
   const scheduledTasks = yield* ScheduledTaskService.ScheduledTaskService;
   const projects = yield* ProjectService.ProjectService;
+  const threadLaunch = yield* ThreadLaunchService.ThreadLaunchService;
 
   /** A caller-named project, which must exist before anything is recorded against it. */
   const requireProject = (projectId: ProjectId) =>
@@ -864,6 +866,32 @@ const make = Effect.gen(function* () {
         )
       : Effect.succeed(project.defaultModelSelection);
   const secretRequests = yield* SecretRequests.SecretRequests;
+
+  /**
+   * A worktree child waits in "preparing" until its worktree exists. A
+   * replayed request prepares it again only if no preparation is running.
+   */
+  const prepareDelegatedWorkspace = (
+    dispatched: Effect.Success<ReturnType<typeof threadManagement.dispatch>>,
+    commandId: CommandId,
+  ) => {
+    const task = dispatched.storedEvents.find(
+      (stored) =>
+        stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",
+    );
+    const childThreadId =
+      task?.event.type === "subagent.updated" ? task.event.payload.childThreadId : null;
+    const childRun = dispatched.storedEvents.find(
+      (stored) => stored.event.type === "run.created" && stored.event.threadId === childThreadId,
+    );
+    return childThreadId === null || childRun?.event.type !== "run.created"
+      ? Effect.void
+      : threadLaunch.prepareDeferredRun({
+          commandId: CommandId.make(`${commandId}:child-workspace`),
+          threadId: childThreadId,
+          runId: childRun.event.payload.id,
+        });
+  };
 
   const requireCapability = (scope: McpInvocationScope) =>
     scope.capabilities.has("orchestration")
@@ -1828,6 +1856,22 @@ const make = Effect.gen(function* () {
             "Delegated tasks require an active run owned by this MCP provider session.",
           );
         }
+        if (input.branch !== undefined && input.workspace !== "worktree") {
+          return yield* failure("invalid_request", "branch requires workspace='worktree'.");
+        }
+        const workspaceStrategy =
+          input.workspace === "worktree"
+            ? yield* threadLaunch.delegatedWorktreeStrategy({
+                parent: parent.thread,
+                ...(input.branch === undefined ? {} : { branch: input.branch }),
+              })
+            : undefined;
+        if (workspaceStrategy === null) {
+          return yield* failure(
+            "invalid_request",
+            "This thread's checkout is not on a branch, so a worktree has nothing to start from. Use workspace='shared'.",
+          );
+        }
         const providers = yield* loadProviders;
         const target = yield* resolveTargetRechecking({
           parent,
@@ -1845,33 +1889,45 @@ const make = Effect.gen(function* () {
           requestKey: key,
           operation: "delegate-task",
         });
-        const result = yield* threadManagement
-          .dispatch({
-            type: "delegated_task.request",
-            createdBy: "agent",
-            creationSource: "mcp",
-            commandId,
-            parentThreadId: scope.thread.threadId,
-            parentRunId: parentRun.id,
-            parentNodeId: parentRun.rootNodeId,
-            task: taskPrompt(input),
-            ...(input.title === undefined ? {} : { title: input.title }),
-            modelSelection: target.modelSelection,
-            runtimeMode,
-            interactionMode,
-            // Async delegations wake the parent on every child terminal; wait
-            // delegations deliver through the blocking tool call, so a wake is
-            // only needed if the parent settled first (timeout, disconnect).
-            completionWake: input.mode === "wait" ? "settled_only" : "always",
-          })
-          .pipe(
-            Effect.mapError((error) =>
-              failure(
-                "orchestration_error",
-                `Unable to create delegated task: ${errorMessage(error)}`,
-              ),
-            ),
-          );
+        const parentNodeId = parentRun.rootNodeId;
+        // Once the request commits, scheduling the child's worktree must not be
+        // cut short, or the child would wait in "preparing" until a restart.
+        const result = yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            const dispatched = yield* threadManagement
+              .dispatch({
+                type: "delegated_task.request",
+                createdBy: "agent",
+                creationSource: "mcp",
+                commandId,
+                parentThreadId: scope.thread.threadId,
+                parentRunId: parentRun.id,
+                parentNodeId,
+                task: taskPrompt(input),
+                ...(input.title === undefined ? {} : { title: input.title }),
+                modelSelection: target.modelSelection,
+                runtimeMode,
+                interactionMode,
+                // Async delegations wake the parent on every child terminal; wait
+                // delegations deliver through the blocking tool call, so a wake is
+                // only needed if the parent settled first (timeout, disconnect).
+                completionWake: input.mode === "wait" ? "settled_only" : "always",
+                ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
+              })
+              .pipe(
+                Effect.mapError((error) =>
+                  failure(
+                    "orchestration_error",
+                    `Unable to create delegated task: ${errorMessage(error)}`,
+                  ),
+                ),
+              );
+            if (workspaceStrategy !== undefined) {
+              yield* prepareDelegatedWorkspace(dispatched, commandId);
+            }
+            return dispatched;
+          }),
+        );
         const taskEvent = result.storedEvents.find(
           (stored) =>
             stored.event.type === "subagent.updated" && stored.event.payload.origin === "app_owned",
@@ -2500,4 +2556,5 @@ export const layer: Layer.Layer<
   | ScheduledTaskService.ScheduledTaskService
   | ProjectService.ProjectService
   | SecretRequests.SecretRequests
+  | ThreadLaunchService.ThreadLaunchService
 > = Layer.effect(OrchestratorMcpService, make);

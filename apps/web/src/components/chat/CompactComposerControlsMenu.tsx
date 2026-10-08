@@ -3,6 +3,7 @@ import { memo, type ReactNode } from "react";
 import { EllipsisIcon } from "lucide-react";
 import {
   Menu,
+  MenuCheckboxItem,
   MenuPopup,
   MenuRadioGroup,
   MenuRadioItem,
@@ -31,6 +32,9 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   hidden?: boolean;
   onToggleInteractionMode: () => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
+  /** Null hides the orchestrator toggle, as when it fits in the strip. */
+  orchestratorMode?: boolean | null;
+  onToggleOrchestratorMode?: () => void;
 }) {
   const composerFloatingLayerProps = useComposerMenuProps();
   const size = props.size ?? "sm";
@@ -75,6 +79,17 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuDivider />
           </>
         ) : null}
+        {props.orchestratorMode === null || props.orchestratorMode === undefined ? null : (
+          <>
+            <MenuCheckboxItem
+              checked={props.orchestratorMode}
+              onCheckedChange={() => props.onToggleOrchestratorMode?.()}
+            >
+              Orchestrate
+            </MenuCheckboxItem>
+            <MenuDivider />
+          </>
+        )}
         <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
         <MenuRadioGroup
           value={props.runtimeMode}

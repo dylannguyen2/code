@@ -1969,6 +1969,9 @@ const layerWsRpc = (
                     runtimeMode: input.runtimeMode,
                     interactionMode: input.interactionMode,
                     workspaceStrategy: input.workspaceStrategy,
+                    ...(input.orchestrator === undefined
+                      ? {}
+                      : { orchestrator: input.orchestrator }),
                     ...(input.initialMessage === undefined
                       ? {}
                       : {

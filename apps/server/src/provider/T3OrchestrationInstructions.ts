@@ -36,6 +36,38 @@ ACP fallback: some ACP agents accept the injected MCP server but fail to expose 
 When a chart, table, diagram, image collage, or mockup would say more than prose, build a self-contained HTML page, check it with \`html_preview\`, then publish it with \`html_render\` before your final reply. The reader sees the page above that reply, so don't announce or restate it; add only what it doesn't say.
 `;
 
+const T3_CODE_ORCHESTRATOR_MODE_INSTRUCTIONS = `<t3_code_orchestrator_mode>
+You are the orchestrator for this thread. The user talks to you, and delegated threads do the work.
+- Split the request into independent tasks. Start each with the t3-code \`delegate_task\` tool using mode='async' and workspace='worktree', so every task runs on its own branch in its own git worktree. Give each a short title and a self-contained prompt: the goal, the relevant files and constraints, and to commit its work and end with a brief summary of what changed and what is left.
+- Use workspace='shared' only for read-only investigation that must see this checkout's uncommitted changes.
+- Do not implement tasks yourself unless the user asks you to.
+- After delegating, tell the user in a sentence or two what you started, then end your turn. Each finished task wakes you with its result: report it to the user concisely, then delegate follow-up work if it is needed. The user can also watch and steer any delegated thread directly.
+- To redirect a task that is still running, send to its childThreadId with \`t3_thread_send\` mode='steer'. To stop one, use \`task_cancel\`.
+</t3_code_orchestrator_mode>`;
+
+const T3_CODE_ORCHESTRATOR_MODE_OFF_INSTRUCTIONS = `<t3_code_orchestrator_mode>
+Orchestrator mode is off. Do the work in this thread directly unless the user asks you to delegate.
+</t3_code_orchestrator_mode>`;
+
+/**
+ * Orchestrator threads restate their role with every message the user writes,
+ * so turning the mode on or off takes effect on the next turn for every
+ * provider. `false` means the user turned the mode off, which is restated too
+ * because the provider still remembers the earlier instructions.
+ */
+export function t3OrchestratorModePrompt(input: {
+  readonly prompt: string;
+  readonly orchestrator: boolean | undefined;
+}): string {
+  if (input.orchestrator === undefined) return input.prompt;
+  // Native slash commands must remain at the start of the prompt.
+  if (input.prompt.trimStart().startsWith("/")) return input.prompt;
+  const instructions = input.orchestrator
+    ? T3_CODE_ORCHESTRATOR_MODE_INSTRUCTIONS
+    : T3_CODE_ORCHESTRATOR_MODE_OFF_INSTRUCTIONS;
+  return `${instructions}\n\n${input.prompt}`;
+}
+
 export const T3_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 ## T3 Code collaborative browser
