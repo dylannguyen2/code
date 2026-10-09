@@ -104,6 +104,36 @@ export function deriveDelegatedThreadRows(input: {
   return rows;
 }
 
+/**
+ * Where a delegated thread stands from its own shell, for places that do not
+ * read its task. A settled thread reads as its latest run ended.
+ */
+export function delegatedThreadStateFromShell(
+  shell: OrchestrationV2ThreadShell,
+): DelegatedThreadState {
+  const live = stateFromShell(shell);
+  if (live !== null) return live;
+  switch (shell.status) {
+    case "failed":
+      return "failed";
+    case "cancelled":
+    case "interrupted":
+      return "stopped";
+    case "queued":
+    case "preparing":
+    case "starting":
+      return "preparing";
+    case "running":
+      return "running";
+    case "waiting":
+      return "waiting";
+    case "idle":
+    case "completed":
+    case "rolled_back":
+      return "done";
+  }
+}
+
 export function summarizeDelegatedThreads(
   rows: ReadonlyArray<DelegatedThreadRow>,
 ): DelegatedThreadProgress {

@@ -65,6 +65,8 @@ const isClosedViewEntry = (entry: unknown): entry is ClosedViewEntry => {
     case "pull-requests":
     case "threads":
       return surface.id === surface.kind;
+    case "thread":
+      return typeof surface.threadId === "string" && surface.id === `thread:${surface.threadId}`;
     case "preview":
       return surface.resourceId === null || typeof surface.resourceId === "string";
     case "file":

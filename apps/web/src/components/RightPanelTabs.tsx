@@ -1,6 +1,7 @@
-import { pullRequestHostOf, type SourceControlProviderKind } from "@t3tools/contracts";
+import { pullRequestHostOf, type SourceControlProviderKind, ThreadId } from "@t3tools/contracts";
+import { delegatedThreadStateFromShell } from "@t3tools/client-runtime/state/delegated-threads";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { useProjects, useServerConfigs, useThreadShells } from "~/state/entities";
+import { useProjects, useServerConfigs, useThreadShell, useThreadShells } from "~/state/entities";
 import {
   threadPullRequestKeysEqual,
   visibleThreadPullRequests,
@@ -13,6 +14,7 @@ import type {
   PullRequestState,
   ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
+import { DelegatedThreadStateIcon } from "./chat/DelegatedThreadStateIcon";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
   Smartphone,
@@ -620,6 +622,8 @@ function surfaceTitle(
       return "Pull requests";
     case "threads":
       return "Threads";
+    case "thread":
+      return "Thread";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -633,6 +637,36 @@ function surfaceTitle(
       }
     }
   }
+}
+
+/** A delegated thread's tab reads its live title from the thread itself. */
+function DelegatedThreadTabTitle(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: string;
+}) {
+  const shell = useThreadShell({
+    environmentId: props.environmentId,
+    threadId: ThreadId.make(props.threadId),
+  });
+  return <>{shell?.title ?? "Thread"}</>;
+}
+
+function DelegatedThreadTabIcon(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: string;
+}) {
+  const shell = useThreadShell({
+    environmentId: props.environmentId,
+    threadId: ThreadId.make(props.threadId),
+  });
+  return shell === null ? (
+    <ListChecks className="size-3 shrink-0" />
+  ) : (
+    <DelegatedThreadStateIcon
+      state={delegatedThreadStateFromShell(shell.source)}
+      className="size-3"
+    />
+  );
 }
 
 function PreviewFavicon({ capturedUrl, url }: { capturedUrl: string | null; url: string | null }) {
@@ -705,6 +739,12 @@ function SurfaceIcon({
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "threads":
       return <ListChecks className="size-3 shrink-0" />;
+    case "thread":
+      return environmentId === null ? (
+        <ListChecks className="size-3 shrink-0" />
+      ) : (
+        <DelegatedThreadTabIcon environmentId={environmentId} threadId={surface.threadId} />
+      );
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -1253,7 +1293,16 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                             className="cursor-pointer flex min-w-0 items-center"
                             onClick={() => props.onActivate(surface)}
                           >
-                            <span className="truncate">{title}</span>
+                            <span className="truncate">
+                              {surface.kind === "thread" && props.environmentId !== null ? (
+                                <DelegatedThreadTabTitle
+                                  environmentId={props.environmentId}
+                                  threadId={surface.threadId}
+                                />
+                              ) : (
+                                title
+                              )}
+                            </span>
                           </button>
                         }
                       />

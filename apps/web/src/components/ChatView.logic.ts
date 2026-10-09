@@ -16,6 +16,7 @@ import {
   type ProviderInteractionMode,
   ProviderDriverKind,
   type ProviderInstanceId,
+  type ProviderOptionSelection,
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
@@ -58,6 +59,10 @@ import type { DraftThreadEnvMode } from "../composerDraftStore";
 import { collapseExpandedComposerCursor, type ComposerSubmissionIntent } from "../composer-logic";
 import type { ReviewCommentContext } from "../reviewCommentContext";
 import { derivePhase, type TimelineEntry } from "../session-logic";
+import { resolveAppModelSelectionForInstance } from "../modelSelection";
+import { getProviderModelCapabilities } from "../providerModels";
+import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
+import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import type { PreviewMiniPlayerSource } from "../previewMiniPlayerStore";
 import type { DesktopPreviewOverlay } from "../previewStateStore";
 import type { RightPanelSurface } from "../rightPanelStore";
@@ -1041,6 +1046,116 @@ export function deriveLockedProvider(input: {
   const narrowedSelectedProvider =
     selectedProvider && isProviderDriverKind(selectedProvider) ? selectedProvider : null;
   return narrowedThreadProvider ?? narrowedSelectedProvider ?? null;
+}
+
+/**
+ * The latest settled item after which files on disk may have changed, as a
+ * key the diff refreshes on. File tools are explicit; completed commands are
+ * included because a shell command can mutate the workspace without reporting
+ * the paths it touched.
+ */
+export function deriveWorkspaceMutationId(
+  visibleTurnItems: ReadonlyArray<{ readonly item: OrchestrationV2ProjectedTurnItem["item"] }>,
+  turnDiffSummaries: ReadonlyArray<{ readonly completedAt: string | null }>,
+): string | null {
+  let itemId: string | null = null;
+  for (let index = visibleTurnItems.length - 1; index >= 0; index -= 1) {
+    const item = visibleTurnItems[index]?.item;
+    if (!item) continue;
+    if (item.type !== "command_execution" && item.type !== "file_change") continue;
+    if (item.status === "pending" || item.status === "running" || item.status === "waiting") {
+      continue;
+    }
+    itemId = item.id;
+    break;
+  }
+  const latestCheckpointCompletedAt = turnDiffSummaries.at(-1)?.completedAt ?? null;
+  return itemId === null && latestCheckpointCompletedAt === null
+    ? null
+    : JSON.stringify([itemId, latestCheckpointCompletedAt]);
+}
+
+/** The prompt a provider receives, with the effort prefix its model takes. */
+export function formatOutgoingPrompt(params: {
+  provider: ProviderDriverKind;
+  model: string | null;
+  models: ReadonlyArray<ServerProvider["models"][number]>;
+  effort: string | null;
+  text: string;
+}): string {
+  const caps = getProviderModelCapabilities(params.models, params.model, params.provider);
+  const promptEffort = resolvePromptInjectedEffort(caps, params.effort);
+  return applyClaudePromptEffortPrefix(params.text, promptEffort);
+}
+
+/**
+ * What picking `model` on `instanceId` in a thread's composer does: nothing
+ * when the thread is locked to another provider or the model is unknown, a
+ * warning when its started session cannot change to it, or the selection the
+ * composer should send with next. The model's remembered options come along.
+ */
+export function resolveComposerModelPick(input: {
+  readonly instanceId: ProviderInstanceId;
+  readonly model: string;
+  readonly settings: UnifiedSettings;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly lockedProvider: ProviderDriverKind | null;
+  readonly supportsProviderSwitchingViaHandoff: boolean;
+  readonly currentModelSelection: ModelSelection;
+  readonly hasStartedSession: boolean;
+  /** The provider instance the thread's session runs on, once it has one. */
+  readonly runtimeProviderInstanceId: ProviderInstanceId | null;
+  readonly rememberedOptions: Partial<
+    Record<ProviderInstanceId, Partial<Record<string, ReadonlyArray<ProviderOptionSelection>>>>
+  >;
+}):
+  | { readonly type: "ignored" }
+  | { readonly type: "blocked"; readonly title: string; readonly description: string }
+  | { readonly type: "selected"; readonly selection: ModelSelection } {
+  // Look up the configured instance so model normalization and custom model
+  // lookup stay scoped to that exact instance. The server remains authoritative.
+  const entry = input.providers.find((snapshot) => snapshot.instanceId === input.instanceId);
+  const locked = !input.supportsProviderSwitchingViaHandoff && input.lockedProvider !== null;
+  if (locked && entry?.driver !== undefined && entry.driver !== input.lockedProvider) {
+    return { type: "ignored" };
+  }
+  if (locked && input.runtimeProviderInstanceId !== null) {
+    const currentEntry = input.providers.find(
+      (snapshot) => snapshot.instanceId === input.runtimeProviderInstanceId,
+    );
+    if (
+      currentEntry?.continuation?.groupKey &&
+      entry?.continuation?.groupKey &&
+      currentEntry.continuation.groupKey !== entry.continuation.groupKey
+    ) {
+      return { type: "ignored" };
+    }
+  }
+  const resolvedModel = resolveAppModelSelectionForInstance(
+    input.instanceId,
+    input.settings,
+    input.providers,
+    input.model,
+  );
+  if (!resolvedModel) return { type: "ignored" };
+  // Restore this model's own remembered options; without any, start it from
+  // its default rather than carrying the previous model's over.
+  const rememberedOptions = input.rememberedOptions[input.instanceId]?.[resolvedModel];
+  const selection: ModelSelection =
+    rememberedOptions !== undefined && rememberedOptions.length > 0
+      ? { instanceId: input.instanceId, model: resolvedModel, options: [...rememberedOptions] }
+      : { instanceId: input.instanceId, model: resolvedModel };
+  const blockReason = getStartedThreadModelChangeBlockReason({
+    providers: input.providers,
+    hasStartedSession: input.hasStartedSession,
+    supportsProviderSwitchingViaHandoff: input.supportsProviderSwitchingViaHandoff,
+    currentModelSelection: input.currentModelSelection,
+    currentProviderInstanceId: input.runtimeProviderInstanceId,
+    nextModelSelection: selection,
+  });
+  return blockReason === null
+    ? { type: "selected", selection }
+    : { type: "blocked", ...blockReason };
 }
 
 export function getStartedThreadModelChangeBlockReason(input: {

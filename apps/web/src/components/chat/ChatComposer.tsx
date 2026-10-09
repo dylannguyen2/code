@@ -1746,6 +1746,11 @@ export interface ChatComposerProps {
   setThreadError: (threadId: ThreadId | null, error: string | null) => void;
   onExpandImage: (preview: ExpandedImagePreview) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;
+  /**
+   * Window-wide composer shortcuts act only while this composer has focus. Set
+   * where a second composer shares the page with the thread's own.
+   */
+  scopeShortcutsToFocus?: boolean;
 }
 
 // --------------------------------------------------------------------------
@@ -1856,6 +1861,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     onFileOpen,
     editingQueuedAttachments,
     onRemoveEditingQueuedAttachment,
+    scopeShortcutsToFocus = false,
   } = props;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
@@ -5732,6 +5738,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
         },
       });
       if (command !== "composer.stash") return;
+      if (
+        scopeShortcutsToFocus &&
+        !(event.target instanceof Node && composerFormRef.current?.contains(event.target))
+      ) {
+        return;
+      }
       // Always claim the shortcut so the browser save dialog never opens,
       // even when the composer is in a state that can't stash.
       event.preventDefault();
@@ -5757,6 +5769,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     keybindings,
     pendingUserInputs.length,
     projectSelectionRequired,
+    scopeShortcutsToFocus,
     stashCurrentPrompt,
     isRevertingCheckpoint,
     terminalOpen,

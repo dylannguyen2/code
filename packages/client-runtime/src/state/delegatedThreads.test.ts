@@ -9,7 +9,11 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { deriveDelegatedThreadRows, summarizeDelegatedThreads } from "./delegatedThreads.ts";
+import {
+  delegatedThreadStateFromShell,
+  deriveDelegatedThreadRows,
+  summarizeDelegatedThreads,
+} from "./delegatedThreads.ts";
 
 const startedAt = DateTime.makeUnsafe("2026-10-08T12:00:00.000Z");
 
@@ -118,5 +122,20 @@ describe("delegated threads", () => {
     ]);
     expect(rows[0]?.activeSince).toBe("2026-10-08T12:00:00.000Z");
     expect(summarizeDelegatedThreads(rows)).toEqual({ done: 1, active: 1, total: 3 });
+  });
+
+  it("reads a thread's state from its shell alone, live work first", () => {
+    const stateOf = (overrides: Partial<OrchestrationV2ThreadShell>) =>
+      delegatedThreadStateFromShell(shell("child", overrides)[1]);
+    expect(stateOf({ activityRunStatus: "running", status: "completed" })).toBe("running");
+    expect(
+      stateOf({
+        activityRunStatus: "running",
+        pendingRuntimeRequest: {} as OrchestrationV2ThreadShell["pendingRuntimeRequest"],
+      }),
+    ).toBe("waiting");
+    expect(stateOf({ status: "completed" })).toBe("done");
+    expect(stateOf({ status: "failed" })).toBe("failed");
+    expect(stateOf({ status: "interrupted" })).toBe("stopped");
   });
 });

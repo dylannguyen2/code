@@ -61,7 +61,8 @@ export function QueuedRunsControl({
   >;
   /** The saved queue entry stays visible while its draft is edited in the composer. */
   readonly editingRunId: RunId | null;
-  readonly onEditQueuedRun: (request: EditQueuedRunRequest) => void;
+  /** Absent where the composer cannot take a queued message back for editing. */
+  readonly onEditQueuedRun?: (request: EditQueuedRunRequest) => void;
   readonly onCancelEdit: () => void;
 }) {
   const projection = useThreadProjection(
@@ -215,10 +216,12 @@ export function QueuedRunsControl({
     // moving the caret inside that draft.
     editLatest(repeat) {
       const latest = queued.at(-1);
-      if (!latest || props.editingRunId !== null || busyRunId !== null) return false;
+      const onEditQueuedRun = props.onEditQueuedRun;
+      if (!latest || !onEditQueuedRun || props.editingRunId !== null || busyRunId !== null)
+        return false;
       if (!repeat) {
         setExpanded(true);
-        props.onEditQueuedRun({
+        onEditQueuedRun({
           runId: latest.run.id,
           messageId: latest.run.userMessageId,
           text: latest.text,
@@ -415,33 +418,35 @@ export function QueuedRunsControl({
                       </Button>
                     ) : (
                       <>
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Button
-                                size="icon-xs"
-                                variant="ghost-muted"
-                                aria-label="Edit queued message"
-                                disabled={item.runId === null || busyRunId !== null}
-                                onClick={() => {
-                                  if (item.runId !== null && item.messageId !== null) {
-                                    props.onEditQueuedRun({
-                                      runId: item.runId,
-                                      messageId: item.messageId,
-                                      text: item.text,
-                                      attachments: item.attachments,
-                                    });
-                                  }
-                                }}
-                              />
-                            }
-                          >
-                            <PencilIcon />
-                          </TooltipTrigger>
-                          <TooltipPopup>
-                            {`Edit in the composer${item.serverIndex === queued.length - 1 && props.editShortcutLabel ? ` (${props.editShortcutLabel})` : ""}`}
-                          </TooltipPopup>
-                        </Tooltip>
+                        {props.onEditQueuedRun === undefined ? null : (
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  size="icon-xs"
+                                  variant="ghost-muted"
+                                  aria-label="Edit queued message"
+                                  disabled={item.runId === null || busyRunId !== null}
+                                  onClick={() => {
+                                    if (item.runId !== null && item.messageId !== null) {
+                                      props.onEditQueuedRun?.({
+                                        runId: item.runId,
+                                        messageId: item.messageId,
+                                        text: item.text,
+                                        attachments: item.attachments,
+                                      });
+                                    }
+                                  }}
+                                />
+                              }
+                            >
+                              <PencilIcon />
+                            </TooltipTrigger>
+                            <TooltipPopup>
+                              {`Edit in the composer${item.serverIndex === queued.length - 1 && props.editShortcutLabel ? ` (${props.editShortcutLabel})` : ""}`}
+                            </TooltipPopup>
+                          </Tooltip>
+                        )}
                         <Tooltip>
                           <TooltipTrigger render={<span className="flex shrink-0" />}>
                             <Button

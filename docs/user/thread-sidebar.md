@@ -57,10 +57,13 @@ Whenever a thread finishes, its task or a later follow-up, the orchestrator
 reports the result in the chat.
 
 The **Threads** tab in the right panel lists the delegated threads as a checklist.
-Select one to watch what its agent is doing and to send it a message directly: a running
-thread takes it as a steer, or as its next turn when its agent cannot be steered
-mid-turn. A finished thread takes it as a follow-up. Open the full thread from the
-arrow in its header. Collapse the panel with the right-panel toggle or `mod+alt+b`.
+Select one to open it in its own tab, where you can watch its agent and write to it
+with the same composer as the main chat: a running thread takes your message as a
+steer, or as its next turn when its agent cannot be steered mid-turn. Switch the tab
+to **Changes**, **Terminal**, or **Browser** to see that thread's diff, or to work in
+its worktree. Its terminal and browser stay with the thread when you open it in full
+from the arrow in the tab's header. Collapse the panel with the right-panel toggle
+or `mod+alt+b`.
 
 Worktrees start from the orchestrator's branch, so delegated threads see its
 committed work but not its uncommitted changes. They stay after the work is done,

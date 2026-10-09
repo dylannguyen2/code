@@ -1,4 +1,4 @@
-import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { type EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
@@ -286,25 +286,48 @@ describe("rightPanelStore", () => {
     );
   });
 
-  it("opens one Threads tab on a delegated thread and returns to its list", () => {
+  it("opens each delegated thread in its own tab and keeps the view it was left on", () => {
     const store = useRightPanelStore.getState();
-    store.openFile(refA, "src/app.ts");
-    store.selectDelegatedThread(refA, "thread-child-1");
-    store.selectDelegatedThread(refA, "thread-child-2");
+    store.open(refA, "threads");
+    store.openDelegatedThread(refA, "thread-child-1");
+    store.openDelegatedThread(refA, "thread-child-2", "terminal");
+    store.openDelegatedThread(refA, "thread-child-1", "changes");
+    store.activateSurface(refA, "threads");
+    // Reopening from the checklist returns to the view the tab was on.
+    store.openDelegatedThread(refA, "thread-child-1");
 
     const opened = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
-    expect(opened.isOpen).toBe(true);
-    expect(opened.activeSurfaceId).toBe("threads");
-    expect(opened.surfaces.filter((surface) => surface.kind === "threads")).toEqual([
-      { id: "threads", kind: "threads", selectedThreadId: "thread-child-2" },
+    expect(opened.activeSurfaceId).toBe("thread:thread-child-1");
+    expect(opened.surfaces).toEqual([
+      { id: "threads", kind: "threads" },
+      { id: "thread:thread-child-1", kind: "thread", threadId: "thread-child-1", view: "changes" },
+      {
+        id: "thread:thread-child-2",
+        kind: "thread",
+        threadId: "thread-child-2",
+        view: "terminal",
+      },
     ]);
+  });
 
-    store.selectDelegatedThread(refA, null);
-    expect(
-      selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA).surfaces.find(
-        (surface) => surface.kind === "threads",
-      ),
-    ).toEqual({ id: "threads", kind: "threads", selectedThreadId: null });
+  it("migrates a Threads tab that showed one thread in place to the plain checklist", () => {
+    const migrated = migratePersistedRightPanelState({
+      byThreadKey: {
+        [scopedThreadKey(refA)]: {
+          isOpen: true,
+          activeSurfaceId: "threads",
+          surfaces: [
+            { id: "threads", kind: "threads", selectedThreadId: "thread-child-1" },
+            { id: "thread:thread-child-2", kind: "thread", threadId: "thread-child-2", view: "x" },
+            { id: "thread:wrong", kind: "thread", threadId: "thread-child-3", view: "chat" },
+          ],
+        },
+      },
+    });
+    expect(migrated.byThreadKey[scopedThreadKey(refA)]?.surfaces).toEqual([
+      { id: "threads", kind: "threads" },
+      { id: "thread:thread-child-2", kind: "thread", threadId: "thread-child-2", view: "chat" },
+    ]);
   });
 
   it("allows automatic panels for a later turn after a manual choice", () => {
