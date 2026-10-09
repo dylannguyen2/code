@@ -4287,7 +4287,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             sendEvent,
             dispatchMode ??
               resolveComposerDispatchMode({
-                running: phase === "running",
+                running: phase === "running" || phase === "connecting",
                 alternateModifier: false,
                 activeTurnDefault: settings.followUpBehavior,
               }),
@@ -4323,7 +4323,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       submitComposer(
         event,
         resolveComposerDispatchMode({
-          running: phase === "running",
+          running: phase === "running" || phase === "connecting",
           alternateModifier: event.metaKey || event.ctrlKey,
           activeTurnDefault: settings.followUpBehavior,
         }),

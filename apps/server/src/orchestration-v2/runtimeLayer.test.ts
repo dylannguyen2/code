@@ -1008,6 +1008,156 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
+  it.effect("holds a steer sent before its turn starts and steers it in once the turn runs", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadId = ThreadId.make("runtime-steer-when-running");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-steer-when-running-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-steer-when-running-project"),
+        title: "Steer when running",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: process.cwd(),
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-steer-when-running-first"),
+        threadId,
+        messageId: MessageId.make("runtime-steer-when-running-first"),
+        text: "Start work.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+      });
+      const initial = yield* orchestrator.getThreadProjection(threadId);
+      const run = initial.runs[0]!;
+      assert.equal(run.status, "starting");
+
+      const steerMessageId = MessageId.make("runtime-steer-when-running-steer");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-steer-when-running-steer"),
+        threadId,
+        messageId: steerMessageId,
+        text: "Use the other API instead.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        deliveryIntent: "auto",
+      });
+      const held = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+        (candidate) => candidate.userMessageId === steerMessageId,
+      )!;
+      assert.equal(held.status, "queued");
+      assert.isTrue(held.steerWhenRunning);
+
+      const providerThread = initial.providerThreads[0]!;
+      const now = yield* DateTime.now;
+      const providerSession = {
+        id: providerThread.providerSessionId!,
+        driver,
+        providerInstanceId: modelSelection.instanceId,
+        status: "running" as const,
+        cwd: process.cwd(),
+        model: modelSelection.model,
+        capabilities: CodexProviderCapabilitiesV2,
+        createdAt: now,
+        updatedAt: now,
+        lastError: null,
+      };
+      const providerTurn = {
+        id: ProviderTurnId.make("runtime-steer-when-running-turn"),
+        providerThreadId: providerThread.id,
+        nodeId: run.rootNodeId!,
+        runAttemptId: run.activeAttemptId,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "running" as const,
+        startedAt: now,
+        completedAt: null,
+      };
+      const sessionSpy = vi
+        .spyOn(sessions, "get")
+        .mockReturnValue(
+          Effect.succeed(Option.some({ providerSession } as ProviderAdapterV2SessionRuntime)),
+        );
+      yield* Effect.addFinalizer(() => Effect.sync(() => sessionSpy.mockRestore()));
+      const promoted = yield* eventSink
+        .stream({ afterSequence: yield* eventSink.latestSequence(), eventType: "run.updated" })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.payload.id === held.id &&
+              stored.event.payload.status === "cancelled",
+          ),
+          Stream.runHead,
+          Effect.forkScoped,
+        );
+      yield* eventSink.write({
+        commandId: CommandId.make("runtime-steer-when-running-running"),
+        events: [
+          {
+            id: EventId.make("runtime-steer-when-running-run-event"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "running", startedAt: now },
+          },
+          {
+            id: EventId.make("runtime-steer-when-running-session-event"),
+            type: "provider-session.attached",
+            threadId,
+            occurredAt: now,
+            payload: providerSession,
+          },
+          {
+            id: EventId.make("runtime-steer-when-running-turn-event"),
+            type: "provider-turn.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: providerTurn,
+          },
+        ],
+      });
+      yield* Fiber.join(promoted);
+
+      const steered = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(
+        steered.messages.find((message) => message.id === steerMessageId)?.runId,
+        run.id,
+      );
+      assert.deepEqual(
+        (yield* outbox.listByCommandId(CommandId.make(`server:steer-when-running:${held.id}`))).map(
+          (effect) => effect.request,
+        ),
+        [
+          {
+            type: "provider-turn.steer",
+            providerSessionId: providerSession.id,
+            providerThreadId: providerThread.id,
+            providerTurnId: providerTurn.id,
+            messageId: steerMessageId,
+          },
+        ],
+      );
+    }),
+  );
+
   it.effect("answers an async question after its provider exits and commits the answer once", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

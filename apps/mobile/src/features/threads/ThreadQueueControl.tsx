@@ -385,6 +385,10 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
                       <Text className="shrink-0 text-2xs uppercase tracking-wide text-primary">
                         Editing
                       </Text>
+                    ) : run.steerWhenRunning === true && !workflow?.canPromoteToSteer ? (
+                      <Text className="shrink-0 text-2xs uppercase tracking-wide text-foreground-muted">
+                        Steers when the turn starts
+                      </Text>
                     ) : null}
                     {workflow?.canPromoteToSteer ? (
                       <Pressable

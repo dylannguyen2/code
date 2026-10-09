@@ -128,7 +128,8 @@ export interface ThreadManagementSendResult {
   readonly run: OrchestrationV2Run;
   /** Null for queued sends: the user turn item materializes when the queued turn starts. */
   readonly turnItem: Extract<OrchestrationV2TurnItem, { readonly type: "user_message" }> | null;
-  readonly delivery: "started" | "queued" | "steered" | "restarted";
+  /** steer_when_running: queued until the active turn reaches its provider, then steered into it. */
+  readonly delivery: "started" | "queued" | "steer_when_running" | "steered" | "restarted";
 }
 
 export interface ThreadManagementWaitInput {
@@ -596,11 +597,22 @@ const make = Effect.gen(function* () {
       }
 
       const steerableRun = latestSteerableRun(target);
+      // A turn that has not reached its provider yet takes the steer when it
+      // does; the orchestrator holds it in the queue until then.
+      const startingRun =
+        steerableRun === undefined && (input.mode === "auto" || input.mode === "steer")
+          ? target.runs.find(
+              (run) =>
+                run.status === "preparing" || run.status === "starting" || run.status === "running",
+            )
+          : undefined;
       let dispatchMode: Extract<
         OrchestrationV2Command,
         { readonly type: "message.dispatch" }
       >["dispatchMode"];
-      if (input.mode === "steer" || input.mode === "restart") {
+      if (startingRun !== undefined) {
+        dispatchMode = { type: "queue_after_active" };
+      } else if (input.mode === "steer" || input.mode === "restart") {
         if (steerableRun === undefined) {
           return yield* new ThreadManagementNoSteerableRunError({
             threadId: input.threadId,
@@ -630,6 +642,8 @@ const make = Effect.gen(function* () {
         attachments: input.attachments,
         ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
         dispatchMode,
+        // auto steers any steerable turn here, as steer does.
+        ...(startingRun === undefined ? {} : { deliveryIntent: "steer" as const }),
         createdBy: input.createdBy,
         creationSource: input.creationSource,
       });
@@ -665,7 +679,9 @@ const make = Effect.gen(function* () {
       }
       const delivery: ThreadManagementSendResult["delivery"] =
         turnItem === null || turnItem.inputIntent === "queued_turn"
-          ? "queued"
+          ? run.status === "queued" && run.steerWhenRunning === true
+            ? "steer_when_running"
+            : "queued"
           : turnItem.inputIntent === "turn_start"
             ? "started"
             : input.mode === "restart"

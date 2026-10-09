@@ -598,7 +598,8 @@ it.effect(
           createdBy: "user",
           creationSource: "web",
         });
-        assert.equal(followUp.delivery, "queued");
+        // It waits to steer the first turn, and starts on its own if that turn never runs.
+        assert.equal(followUp.delivery, "steer_when_running");
         assert.equal(followUp.run.status, "queued");
         assert.equal(
           (yield* threads.getThreadRecords(launched.threadId, ["nodes"])).nodes.find(

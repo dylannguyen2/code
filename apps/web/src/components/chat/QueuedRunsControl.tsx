@@ -147,6 +147,8 @@ export function QueuedRunsControl({
           url: queuedImageUrlById.get(attachment.id) ?? null,
         })),
       pending: false,
+      // Until the turn runs; a steer it refused falls back to the Steer button.
+      steerWhenRunning: run.steerWhenRunning === true && workflow?.canPromoteToSteer !== true,
     })),
     ...optimisticQueued.map((message) => ({
       key: message.id,
@@ -163,6 +165,7 @@ export function QueuedRunsControl({
           url: attachment.previewUrl ?? null,
         })),
       pending: true,
+      steerWhenRunning: false,
     })),
   ];
 
@@ -447,32 +450,48 @@ export function QueuedRunsControl({
                             </TooltipPopup>
                           </Tooltip>
                         )}
-                        <Tooltip>
-                          <TooltipTrigger render={<span className="flex shrink-0" />}>
-                            <Button
-                              size="xs"
-                              variant="ghost-muted"
-                              disabled={
-                                item.runId === null ||
-                                busyRunId !== null ||
-                                !workflow?.canPromoteToSteer
+                        {item.steerWhenRunning ? (
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <span className="flex shrink-0 items-center gap-1 px-1.5 text-muted-foreground text-xs" />
                               }
-                              onClick={() => {
-                                if (item.runId !== null) {
-                                  void steer(item.runId);
-                                }
-                              }}
                             >
-                              <CornerUpRightIcon />
-                              Steer
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipPopup>
-                            {activeRun === null
-                              ? "There is no active run to steer"
-                              : `Send as a steer instead${item.serverIndex === 0 && props.steerShortcutLabel ? ` (${props.steerShortcutLabel})` : ""}`}
-                          </TooltipPopup>
-                        </Tooltip>
+                              <CornerUpRightIcon className="size-3.5" />
+                              Steers when the turn starts
+                            </TooltipTrigger>
+                            <TooltipPopup>
+                              The agent is still starting. This joins its turn as soon as it runs.
+                            </TooltipPopup>
+                          </Tooltip>
+                        ) : (
+                          <Tooltip>
+                            <TooltipTrigger render={<span className="flex shrink-0" />}>
+                              <Button
+                                size="xs"
+                                variant="ghost-muted"
+                                disabled={
+                                  item.runId === null ||
+                                  busyRunId !== null ||
+                                  !workflow?.canPromoteToSteer
+                                }
+                                onClick={() => {
+                                  if (item.runId !== null) {
+                                    void steer(item.runId);
+                                  }
+                                }}
+                              >
+                                <CornerUpRightIcon />
+                                Steer
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipPopup>
+                              {activeRun === null
+                                ? "There is no active run to steer"
+                                : `Send as a steer instead${item.serverIndex === 0 && props.steerShortcutLabel ? ` (${props.steerShortcutLabel})` : ""}`}
+                            </TooltipPopup>
+                          </Tooltip>
+                        )}
                         <Tooltip>
                           <TooltipTrigger
                             render={

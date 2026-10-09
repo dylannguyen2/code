@@ -4669,6 +4669,31 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           dispatchMode = { type: "start_immediately" };
         }
       }
+      // A run takes steers once its provider turn runs. A steer sent before
+      // then queues behind the run and joins it when that turn starts.
+      const steerTarget =
+        command.deliveryIntent === "auto" || command.deliveryIntent === "steer"
+          ? projection.runs.findLast(
+              (run) =>
+                run.status === "preparing" ||
+                run.status === "starting" ||
+                run.status === "running" ||
+                run.status === "waiting",
+            )
+          : undefined;
+      const steerTargetAwaitingTurn =
+        steerTarget !== undefined &&
+        dispatchMode.type !== "start_immediately" &&
+        (steerTarget.status === "preparing" ||
+          steerTarget.status === "starting" ||
+          (steerTarget.status === "running" &&
+            !projection.providerTurns.some(
+              (turn) =>
+                turn.runAttemptId === steerTarget.activeAttemptId && turn.status !== "pending",
+            )));
+      if (steerTargetAwaitingTurn) {
+        dispatchMode = { type: "queue_after_active" };
+      }
       if (
         command.notification !== undefined &&
         (command.createdBy !== "agent" ||
@@ -4901,6 +4926,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             capabilities: queuedCapabilities,
           }),
         );
+        const queuedTurns = queuedCapabilities.turns;
+        const steerWhenRunning =
+          steerTargetAwaitingTurn &&
+          !isNativeMaintenanceCommand(command) &&
+          !isGoalCommand(command) &&
+          (queuedTurns.supportsActiveSteering ||
+            (command.deliveryIntent === "steer" &&
+              queuedTurns.supportsInterrupt &&
+              queuedTurns.supportsSteeringByInterruptRestart));
         const queuedProviderThread: OrchestrationV2ProviderThread = targetProviderThread ?? {
           id: idAllocator.derive.providerThread({
             driver: queuedAdapter.driver,
@@ -4966,6 +5000,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )
             ? { queueHeld: true }
             : {}),
+          ...(steerWhenRunning ? { steerWhenRunning: true } : {}),
           queuePosition:
             Math.max(
               0,
@@ -10796,6 +10831,71 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             stored.event.payload.status === "rolled_back"),
       ),
       Stream.runForEach(handleTerminalRun),
+      Effect.forkDetach,
+    );
+
+  // A steer sent before its run's provider turn started waits in the queue
+  // (see dispatchMessage). Once a run's turn runs, those steers join it, in
+  // queue order. One the provider refuses stays queued as a follow-up turn.
+  const promoteSteersWhenRunning = (stored: OrchestrationV2StoredEvent) =>
+    Effect.gen(function* () {
+      if (stored.event.type !== "provider-turn.updated") return;
+      const threadId = stored.event.threadId;
+      const runAttemptId = stored.event.payload.runAttemptId;
+      // Read under the lock so a steer still being queued is seen.
+      const { runs } = yield* threadDispatch.withLock(
+        threadId,
+        projectionStore.getThreadRecords(threadId, ["runs"]),
+      );
+      const target = runs.find(
+        (run) => run.status === "running" && run.activeAttemptId === runAttemptId,
+      );
+      if (target === undefined) return;
+      const steers = runs
+        .filter(
+          (run) =>
+            run.status === "queued" && run.steerWhenRunning === true && run.queueHeld !== true,
+        )
+        .toSorted(
+          (left, right) =>
+            (left.queuePosition ?? left.ordinal) - (right.queuePosition ?? right.ordinal),
+        );
+      for (const steer of steers) {
+        yield* dispatchWithReceipt({
+          type: "queued-message.promote-to-steer",
+          commandId: CommandId.make(`server:steer-when-running:${steer.id}`),
+          threadId,
+          queuedRunId: steer.id,
+          targetRunId: target.id,
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to steer a queued message into its started turn", {
+              threadId,
+              queuedRunId: steer.id,
+              cause,
+            }),
+          ),
+        );
+      }
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Failed to promote queued steers", {
+          threadId: stored.event.threadId,
+          sequence: stored.sequence,
+          cause,
+        }),
+      ),
+    );
+  yield* eventSink
+    .stream({ afterSequence: terminalEventsAfterSequence, eventType: "provider-turn.updated" })
+    .pipe(
+      Stream.filter(
+        (stored) =>
+          stored.event.type === "provider-turn.updated" &&
+          stored.event.payload.status === "running" &&
+          stored.event.payload.runAttemptId !== null,
+      ),
+      Stream.runForEach(promoteSteersWhenRunning),
       Effect.forkDetach,
     );
 

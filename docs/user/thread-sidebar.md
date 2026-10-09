@@ -52,7 +52,9 @@ command palette with **Turn on orchestrator mode**.
 
 Keep talking to the orchestrator about work already under way. It sends a
 correction or follow-up to the thread that owns that work, splits a message that
-touches several threads, and asks when it cannot tell which thread you mean.
+touches several threads, and asks when it cannot tell which thread you mean. A
+working thread takes the message mid-turn, so it changes course right away, and the
+orchestrator tells you when a thread could only queue it for its next turn.
 Whenever a thread finishes, its task or a later follow-up, the orchestrator
 reports the result in the chat.
 

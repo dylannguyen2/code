@@ -673,7 +673,7 @@ export function useThreadComposerState() {
       // to a queued run on the server instead of failing the delivery and
       // bouncing the message back into the draft.
       const followUpAction = resolveComposerDispatchMode({
-        running: activeThreadBusy && canSteerActiveTurn,
+        running: activeThreadBusy,
         alternateModifier: followUpOverride !== undefined && followUpOverride !== followUpBehavior,
         activeTurnDefault: followUpBehavior,
       });
