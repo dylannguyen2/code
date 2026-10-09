@@ -12,6 +12,7 @@ import {
   EventId,
   MessageId,
   NodeId,
+  PlanId,
   RuntimeRequestId,
   TurnItemId,
   type ModelSelection,
@@ -58,6 +59,7 @@ import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import { ROLLBACK_FAILED_MESSAGE } from "./CheckpointRollbackService.ts";
 import * as EffectWorker from "./EffectWorker.ts";
+import * as DelegatedProgressCheckIns from "./DelegatedProgressCheckIns.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
@@ -1156,6 +1158,217 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
         ],
       );
     }),
+  );
+
+  it.effect(
+    "checks in on an orchestrator after a quiet stretch once a working thread progresses",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const sweep = yield* DelegatedProgressCheckIns.makeSweep;
+        const parentId = ThreadId.make("runtime-progress-parent");
+        const childId = ThreadId.make("runtime-progress-child");
+        const taskId = NodeId.make("runtime-progress-task");
+        const childRunId = RunId.make("runtime-progress-child-run");
+        const projectId = ProjectId.make("runtime-progress-project");
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "user",
+          creationSource: "web",
+          commandId: CommandId.make("runtime-progress-create"),
+          threadId: parentId,
+          projectId,
+          title: "Orchestrator",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: process.cwd(),
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("runtime-progress-orchestrator"),
+          threadId: parentId,
+          orchestrator: true,
+        });
+        const now = yield* DateTime.now;
+        const run = (threadId: ThreadId, runId: RunId, status: OrchestrationV2Run["status"]) => ({
+          id: EventId.make(`${runId}-event`),
+          type: "run.updated" as const,
+          threadId,
+          runId,
+          occurredAt: now,
+          payload: {
+            id: runId,
+            threadId,
+            ordinal: 1,
+            providerInstanceId: modelSelection.instanceId,
+            modelSelection,
+            providerThreadId: null,
+            userMessageId: MessageId.make(`${runId}-message`),
+            rootNodeId: null,
+            activeAttemptId: null,
+            status,
+            requestedAt: now,
+            startedAt: now,
+            completedAt: status === "running" ? null : now,
+            checkpointId: null,
+            contextHandoffId: null,
+          },
+        });
+        const checklist = (
+          version: number,
+          steps: ReadonlyArray<readonly [string, "pending" | "running" | "completed"]>,
+        ) => ({
+          id: EventId.make(`runtime-progress-plan-${version}`),
+          type: "plan.updated" as const,
+          threadId: childId,
+          runId: childRunId,
+          occurredAt: now,
+          payload: {
+            id: PlanId.make("runtime-progress-plan"),
+            threadId: childId,
+            runId: childRunId,
+            nodeId: NodeId.make("runtime-progress-child-node"),
+            status: "active" as const,
+            kind: "todo_list" as const,
+            steps: steps.map(([text, status], index) => ({ id: `step-${index}`, text, status })),
+          },
+        });
+        yield* eventSink.write({
+          commandId: CommandId.make("runtime-progress-seed"),
+          events: [
+            run(parentId, RunId.make("runtime-progress-parent-run"), "completed"),
+            {
+              id: EventId.make("runtime-progress-child-thread"),
+              type: "thread.created",
+              threadId: childId,
+              occurredAt: now,
+              payload: {
+                createdBy: "agent",
+                creationSource: "server",
+                id: childId,
+                projectId,
+                title: "Auth refactor",
+                providerInstanceId: modelSelection.instanceId,
+                modelSelection,
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: null,
+                worktreePath: null,
+                activeProviderThreadId: null,
+                lineage: {
+                  parentThreadId: parentId,
+                  relationshipToParent: "subagent",
+                  rootThreadId: parentId,
+                },
+                forkedFrom: { type: "node", nodeId: taskId },
+                createdAt: now,
+                updatedAt: now,
+                archivedAt: null,
+                settledOverride: null,
+                settledAt: null,
+                lastVisitedAt: null,
+                deletedAt: null,
+              },
+            },
+            {
+              id: EventId.make("runtime-progress-task-event"),
+              type: "subagent.updated",
+              threadId: parentId,
+              nodeId: taskId,
+              occurredAt: now,
+              payload: {
+                id: taskId,
+                threadId: parentId,
+                runId: RunId.make("runtime-progress-parent-run"),
+                parentNodeId: NodeId.make("runtime-progress-parent-root"),
+                origin: "app_owned",
+                createdBy: "agent",
+                driver,
+                providerInstanceId: modelSelection.instanceId,
+                providerThreadId: null,
+                childThreadId: childId,
+                nativeTaskRef: null,
+                prompt: "Refactor auth.",
+                title: null,
+                model: null,
+                completionWake: "always",
+                status: "running",
+                result: null,
+                startedAt: now,
+                completedAt: null,
+                updatedAt: now,
+              },
+            },
+            run(childId, childRunId, "running"),
+            checklist(1, [
+              ["Migrate the schema", "running"],
+              ["Write tests", "pending"],
+            ]),
+          ],
+        });
+        const checkIns = orchestrator
+          .getThreadProjection(parentId)
+          .pipe(
+            Effect.map((projection) =>
+              projection.messages.flatMap((message) =>
+                message.notification?.outcome === "updated" ? [message] : [],
+              ),
+            ),
+          );
+
+        // The first look at a thread is its baseline.
+        yield* TestClock.adjust("11 minutes");
+        yield* sweep;
+        assert.deepEqual(yield* checkIns, []);
+
+        yield* eventSink.write({
+          commandId: CommandId.make("runtime-progress-advance"),
+          events: [
+            checklist(2, [
+              ["Migrate the schema", "completed"],
+              ["Write tests", "running"],
+            ]),
+            {
+              id: EventId.make("runtime-progress-child-message"),
+              type: "message.updated",
+              threadId: childId,
+              runId: childRunId,
+              occurredAt: now,
+              payload: {
+                createdBy: "agent",
+                creationSource: "provider",
+                id: MessageId.make("runtime-progress-child-message"),
+                threadId: childId,
+                runId: childRunId,
+                nodeId: null,
+                role: "assistant",
+                text: "Schema migrated. Billing still reads the old token table, so it stays.",
+                attachments: [],
+                streaming: false,
+                createdAt: now,
+                updatedAt: now,
+              },
+            },
+          ],
+        });
+        yield* TestClock.adjust("1 minute");
+        yield* sweep;
+        const [checkIn, ...rest] = yield* checkIns;
+        assert.deepEqual(rest, []);
+        assert.deepEqual(checkIn?.notification?.source, {
+          kind: "delegated_task",
+          taskIds: [taskId],
+        });
+        assert.equal(checkIn?.notification?.summary, "Progress check-in: 1 thread working");
+        assert.equal(
+          checkIn?.notification?.detail,
+          `- "Auth refactor" (childThreadId ${childId}), working for 12 min, 1 of 2 steps done (1 since your last update), on "Write tests". Its latest message: "Schema migrated. Billing still reads the old token table, so it stays."`,
+        );
+        assert.include(checkIn?.text ?? "", "Write the user a short update");
+      }),
   );
 
   it.effect("answers an async question after its provider exits and commits the answer once", () =>

@@ -56,7 +56,10 @@ touches several threads, and asks when it cannot tell which thread you mean. A
 working thread takes the message mid-turn, so it changes course right away, and the
 orchestrator tells you when a thread could only queue it for its next turn.
 Whenever a thread finishes, its task or a later follow-up, the orchestrator
-reports the result in the chat.
+reports the result in the chat. While threads work, it also checks in: once the chat
+has been quiet for 10 minutes and a thread has made progress, the orchestrator posts a
+short update on the steps each thread finished, what it is on now, and anything
+notable it found. Stretches without progress stay quiet.
 
 The **Threads** tab in the right panel lists the delegated threads as a checklist.
 Each thread's agent breaks its task into steps, shown under the thread with how many
