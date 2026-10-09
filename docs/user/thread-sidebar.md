@@ -57,7 +57,9 @@ Whenever a thread finishes, its task or a later follow-up, the orchestrator
 reports the result in the chat.
 
 The **Threads** tab in the right panel lists the delegated threads as a checklist.
-Select one to open it in its own tab, where you can watch its agent and write to it
+Each thread's agent breaks its task into steps, shown under the thread with how many
+are done, so you can follow every thread's progress in one place. Select one to open
+it in its own tab, where you can watch its agent and write to it
 with the same composer as the main chat: a running thread takes your message as a
 steer, or as its next turn when its agent cannot be steered mid-turn. Switch the tab
 to **Changes**, **Terminal**, or **Browser** to see that thread's diff, or to work in

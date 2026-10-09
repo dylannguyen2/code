@@ -54,7 +54,11 @@ import { toastManager } from "../ui/toast";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { DelegatedThreadChat } from "./DelegatedThreadChat";
-import { DelegatedThreadMeta, useDelegatedThreadRow } from "./DelegatedThreadsPanel";
+import {
+  DelegatedThreadMeta,
+  useDelegatedThreadChecklist,
+  useDelegatedThreadRow,
+} from "./DelegatedThreadsPanel";
 import { DelegatedThreadStateIcon } from "./DelegatedThreadStateIcon";
 
 const PreviewPanel = lazy(() =>
@@ -90,6 +94,7 @@ export function DelegatedThreadTab(props: {
     [parentRef.environmentId, threadId],
   );
   const row = useDelegatedThreadRow(parentRef, threadId);
+  const checklist = useDelegatedThreadChecklist(parentRef.environmentId, threadId);
   const shell = useThreadShell(childRef);
   const navigate = useNavigate();
   const interruptTurn = useAtomCommand(threadEnvironment.interruptTurn, { reportFailure: false });
@@ -155,7 +160,9 @@ export function DelegatedThreadTab(props: {
           </Tooltip>
         </div>
         <div className="flex min-w-0 items-center justify-between gap-2">
-          <span className="min-w-0">{row === null ? null : <DelegatedThreadMeta row={row} />}</span>
+          <span className="min-w-0">
+            {row === null ? null : <DelegatedThreadMeta row={row} checklist={checklist} />}
+          </span>
           <ToggleGroup
             aria-label="Thread view"
             value={[view]}

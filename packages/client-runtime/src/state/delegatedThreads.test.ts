@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   NodeId,
+  type OrchestrationV2PlanArtifact,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadShell,
   ProviderDriverKind,
@@ -12,6 +13,7 @@ import * as DateTime from "effect/DateTime";
 import {
   delegatedThreadStateFromShell,
   deriveDelegatedThreadRows,
+  latestDelegatedThreadChecklist,
   summarizeDelegatedThreads,
 } from "./delegatedThreads.ts";
 
@@ -137,5 +139,32 @@ describe("delegated threads", () => {
     expect(stateOf({ status: "completed" })).toBe("done");
     expect(stateOf({ status: "failed" })).toBe("failed");
     expect(stateOf({ status: "interrupted" })).toBe("stopped");
+  });
+
+  it("shows the latest checklist a thread wrote, skipping proposed plans and empty lists", () => {
+    const steps = (texts: ReadonlyArray<string>) =>
+      texts.map((text, index) => ({
+        id: `${text}-${index}`,
+        text,
+        status: index === 0 ? ("completed" as const) : ("pending" as const),
+      }));
+    const plan = (kind: "todo_list" | "proposed_plan", texts: ReadonlyArray<string>) =>
+      (kind === "todo_list"
+        ? { kind, steps: steps(texts) }
+        : { kind, markdown: texts.join("\n") }) as unknown as OrchestrationV2PlanArtifact;
+    expect(latestDelegatedThreadChecklist(null)).toBeNull();
+    expect(
+      latestDelegatedThreadChecklist({
+        plans: [
+          plan("todo_list", ["Read the code", "Add the toggle"]),
+          plan("todo_list", ["Remember the choice", "Commit"]),
+          plan("proposed_plan", ["A plan, not a checklist"]),
+          plan("todo_list", []),
+        ],
+      })?.map((step) => [step.text, step.status]),
+    ).toEqual([
+      ["Remember the choice", "completed"],
+      ["Commit", "pending"],
+    ]);
   });
 });

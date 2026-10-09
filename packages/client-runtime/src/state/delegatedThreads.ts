@@ -1,5 +1,7 @@
 import type {
+  OrchestrationV2PlanStep,
   OrchestrationV2Subagent,
+  OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadShell,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -132,6 +134,19 @@ export function delegatedThreadStateFromShell(
     case "rolled_back":
       return "done";
   }
+}
+
+/**
+ * The checklist a delegated thread's agent keeps with its todo tool: the
+ * latest one it wrote, so a settled thread still shows what it achieved.
+ */
+export function latestDelegatedThreadChecklist(
+  projection: Pick<OrchestrationV2ThreadProjection, "plans"> | null,
+): ReadonlyArray<OrchestrationV2PlanStep> | null {
+  const plan = projection?.plans.findLast(
+    (candidate) => candidate.kind === "todo_list" && candidate.steps.length > 0,
+  );
+  return plan?.kind === "todo_list" ? plan.steps : null;
 }
 
 export function summarizeDelegatedThreads(

@@ -1,16 +1,33 @@
+import { useAtomValue } from "@effect/atom-react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import {
   delegatedThreadIsActive,
   deriveDelegatedThreadRows,
+  latestDelegatedThreadChecklist,
   summarizeDelegatedThreads,
   type DelegatedThreadRow,
 } from "@t3tools/client-runtime/state/delegated-threads";
-import type { OrchestrationV2ThreadShell, ScopedThreadRef, ThreadId } from "@t3tools/contracts";
-import { ChevronRightIcon, GitBranchIcon, ListChecksIcon } from "lucide-react";
+import type {
+  EnvironmentId,
+  OrchestrationV2PlanStep,
+  OrchestrationV2ThreadShell,
+  ScopedThreadRef,
+  ThreadId,
+} from "@t3tools/contracts";
+import {
+  CheckIcon,
+  ChevronRightIcon,
+  CircleDotIcon,
+  CircleIcon,
+  GitBranchIcon,
+  ListChecksIcon,
+} from "lucide-react";
 import { useCallback, useMemo } from "react";
 
 import { cn } from "../../lib/utils";
 import { useRightPanelStore } from "../../rightPanelStore";
 import { useThreadProjection, useThreadShells } from "../../state/entities";
+import { environmentThreadDetails } from "../../state/threads";
 import { ScrollArea } from "../ui/scroll-area";
 import { AgentElapsed } from "./AgentElapsed";
 import { DelegatedThreadStateIcon, STATE_PRESENTATION } from "./DelegatedThreadStateIcon";
@@ -46,10 +63,18 @@ export function DelegatedThreadsPanel(props: {
       useRightPanelStore.getState().openDelegatedThread(props.threadRef, threadId),
     [props.threadRef],
   );
-  return <DelegatedThreadList rows={rows} orchestrator={props.orchestrator} onSelect={open} />;
+  return (
+    <DelegatedThreadList
+      environmentId={props.threadRef.environmentId}
+      rows={rows}
+      orchestrator={props.orchestrator}
+      onSelect={open}
+    />
+  );
 }
 
 function DelegatedThreadList(props: {
+  readonly environmentId: EnvironmentId;
   readonly rows: ReadonlyArray<DelegatedThreadRow>;
   readonly orchestrator: boolean;
   readonly onSelect: (threadId: ThreadId) => void;
@@ -93,7 +118,11 @@ function DelegatedThreadList(props: {
         <ul aria-label="Delegated threads" className="m-0 flex list-none flex-col p-1.5">
           {props.rows.map((row) => (
             <li key={row.threadId}>
-              <DelegatedThreadListRow row={row} onSelect={props.onSelect} />
+              <DelegatedThreadListRow
+                environmentId={props.environmentId}
+                row={row}
+                onSelect={props.onSelect}
+              />
             </li>
           ))}
         </ul>
@@ -103,43 +132,109 @@ function DelegatedThreadList(props: {
 }
 
 function DelegatedThreadListRow(props: {
+  readonly environmentId: EnvironmentId;
   readonly row: DelegatedThreadRow;
   readonly onSelect: (threadId: ThreadId) => void;
 }) {
   const { row } = props;
   const settled = !delegatedThreadIsActive(row.state);
+  const checklist = useDelegatedThreadChecklist(props.environmentId, row.threadId);
   return (
-    <button
-      type="button"
-      onClick={() => props.onSelect(row.threadId)}
-      data-delegated-thread-row={row.state}
-      className="group flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
-    >
-      <DelegatedThreadStateIcon state={row.state} className="mt-0.5 size-4" />
-      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <span
-          className={cn(
-            "truncate text-sm",
-            row.state === "done" ? "text-muted-foreground" : "text-foreground",
-          )}
-        >
-          {row.title}
+    <>
+      <button
+        type="button"
+        onClick={() => props.onSelect(row.threadId)}
+        data-delegated-thread-row={row.state}
+        className="group flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-2 py-2 text-left hover:bg-accent focus-visible:bg-accent focus-visible:outline-none"
+      >
+        <DelegatedThreadStateIcon state={row.state} className="mt-0.5 size-4" />
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span
+            className={cn(
+              "truncate text-sm",
+              row.state === "done" ? "text-muted-foreground" : "text-foreground",
+            )}
+          >
+            {row.title}
+          </span>
+          <DelegatedThreadMeta row={row} checklist={checklist} />
         </span>
-        <DelegatedThreadMeta row={row} />
-      </span>
-      <ChevronRightIcon
-        aria-hidden
-        className={cn(
-          "mt-0.5 size-4 shrink-0 text-muted-foreground/60 group-hover:text-foreground",
-          settled && "opacity-60",
-        )}
-      />
-    </button>
+        <ChevronRightIcon
+          aria-hidden
+          className={cn(
+            "mt-0.5 size-4 shrink-0 text-muted-foreground/60 group-hover:text-foreground",
+            settled && "opacity-60",
+          )}
+        />
+      </button>
+      {checklist === null ? null : <DelegatedThreadChecklist steps={checklist} />}
+    </>
   );
 }
 
-export function DelegatedThreadMeta(props: { readonly row: DelegatedThreadRow }) {
-  const { row } = props;
+/** Steps past this many collapse into a count, so one long checklist cannot bury the rest. */
+const CHECKLIST_VISIBLE_STEPS = 8;
+
+/** A delegated thread's own checklist, nested under its row. */
+function DelegatedThreadChecklist(props: {
+  readonly steps: ReadonlyArray<OrchestrationV2PlanStep>;
+}) {
+  const shown = props.steps.slice(0, CHECKLIST_VISIBLE_STEPS);
+  const hidden = props.steps.length - shown.length;
+  return (
+    <ul
+      aria-label="Checklist"
+      className="m-0 ms-4 mb-1 flex list-none flex-col gap-1 border-s ps-4 pb-1"
+      data-delegated-thread-checklist
+    >
+      {shown.map((step) => (
+        <li
+          key={step.id}
+          className="flex min-w-0 items-start gap-1.5 text-xs"
+          data-checklist-step={step.status}
+        >
+          {step.status === "completed" ? (
+            <CheckIcon aria-label="Done" className="mt-0.5 size-3 shrink-0 text-success" />
+          ) : step.status === "running" ? (
+            <CircleDotIcon aria-label="In progress" className="mt-0.5 size-3 shrink-0 text-info" />
+          ) : (
+            <CircleIcon
+              aria-label="To do"
+              className="mt-0.5 size-3 shrink-0 text-muted-foreground/60"
+            />
+          )}
+          <span
+            className={cn(
+              "min-w-0 break-words",
+              step.status === "running" ? "text-foreground" : "text-muted-foreground",
+            )}
+          >
+            {step.text}
+          </span>
+        </li>
+      ))}
+      {hidden > 0 ? <li className="text-xs text-muted-foreground">+{hidden} more</li> : null}
+    </ul>
+  );
+}
+
+/** The checklist a delegated thread keeps, read from the thread itself. */
+export function useDelegatedThreadChecklist(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): ReadonlyArray<OrchestrationV2PlanStep> | null {
+  const ref = useMemo(() => scopeThreadRef(environmentId, threadId), [environmentId, threadId]);
+  // Selecting the plan keeps the row still while the thread streams everything else.
+  return useAtomValue(environmentThreadDetails.threadAtom(ref), (thread) =>
+    latestDelegatedThreadChecklist(thread?.projection ?? null),
+  );
+}
+
+export function DelegatedThreadMeta(props: {
+  readonly row: DelegatedThreadRow;
+  readonly checklist: ReadonlyArray<OrchestrationV2PlanStep> | null;
+}) {
+  const { row, checklist } = props;
   const presentation = STATE_PRESENTATION[row.state];
   return (
     <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
@@ -151,6 +246,11 @@ export function DelegatedThreadMeta(props: { readonly row: DelegatedThreadRow })
         </>
       )}
       <span className={cn("shrink-0", presentation.className)}>{presentation.label}</span>
+      {checklist === null ? null : (
+        <span className="shrink-0 tabular-nums" data-delegated-thread-checklist-progress>
+          {checklist.filter((step) => step.status === "completed").length}/{checklist.length}
+        </span>
+      )}
       {row.activeSince === null ? null : (
         <span className="shrink-0 tabular-nums">
           <AgentElapsed
